@@ -1,26 +1,100 @@
 @import "tailwindcss";
 
+/* --- Dark premium design system (Linear / Vercel style) -------------- */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+  --bg:            #07080a;
+  --bg-elevated:   #0e1015;
+  --surface:       rgba(255, 255, 255, 0.025);
+  --surface-hover: rgba(255, 255, 255, 0.05);
+  --border:        rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --text:          #f4f5f7;
+  --text-muted:    #9aa0ac;
+  --text-dim:      #646b78;
+  --accent:        #6ee7b7;
+  --accent-dim:    rgba(110, 231, 183, 0.12);
+  --up:            #34d399;
+  --down:          #fb923c;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --radius:  16px;
+  --radius-sm: 10px;
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-surface:    var(--surface);
+  --color-border:     var(--border);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
 }
 
+html { color-scheme: dark; }
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Ambient background glow: two soft radial gradients, fixed. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(900px 500px at 15% -8%, rgba(16, 185, 129, 0.10), transparent 65%),
+    radial-gradient(760px 460px at 88% 4%, rgba(59, 130, 246, 0.08), transparent 65%);
+}
+
+/* Numeric alignment everywhere money is shown. */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* Entrance animation for panels. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-rise { animation: rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* Staggered cascade: each panel waits for the one above it. */
+.animate-rise:nth-of-type(n) { animation-delay: 0ms; }
+.stagger-1 { animation-delay: 60ms; }
+.stagger-2 { animation-delay: 120ms; }
+.stagger-3 { animation-delay: 180ms; }
+.stagger-4 { animation-delay: 240ms; }
+
+/* Shimmer for skeleton / hover sheen. */
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+
+/* Focus ring consistent with theme. */
+:focus-visible {
+  outline: 2px solid rgba(110, 231, 183, 0.6);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Custom scrollbar — thin, subtle. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.16); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Selection. */
+::selection {
+  background: rgba(110, 231, 183, 0.24);
+  color: #fff;
 }
