@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { AuthForm } from './auth-form'
 
@@ -35,7 +36,7 @@ export default async function AuthPage({
       />
 
       <div className="relative w-full max-w-sm">
-        <a
+        <Link
           href="/"
           className="mb-8 flex items-center justify-center gap-2.5 text-sm font-semibold tracking-tight text-white"
         >
@@ -43,7 +44,7 @@ export default async function AuthPage({
             H
           </span>
           Finance Dashboard
-        </a>
+        </Link>
 
         <div className="rounded-2xl border border-white/[.07] bg-[#0e1015]/80 p-6 shadow-2xl shadow-black/40 backdrop-blur-xl">
           <h1 className="text-lg font-semibold text-white">

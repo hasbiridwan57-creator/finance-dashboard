@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { addTransaction, addAccount, addHolding } from '@/app/actions'
+import { addTransaction, addAccount, addHolding, importPortfolio, type ImportRow, type ImportRowError } from '@/app/actions'
 import { useRouter } from 'next/navigation'
 
 const CATEGORIES = [
@@ -548,5 +548,433 @@ export function SignOutButton() {
     >
       Keluar
     </button>
+  )
+}
+
+/* ============================================================
+ * Import Portofolio (CSV / paste langsung)
+ * ============================================================ */
+
+/** Parser CSV/TSV sederhana: menghargai kutip dan baris baru di dalam kutip. */
+function parseDelimited(text: string, delimiter: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let inQuotes = false
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"'
+          i++
+        } else {
+          inQuotes = false
+        }
+      } else {
+        field += c
+      }
+      continue
+    }
+    if (c === '"') {
+      inQuotes = true
+    } else if (c === delimiter) {
+      row.push(field)
+      field = ''
+    } else if (c === '\n') {
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ''
+    } else if (c === '\r') {
+      // abaikan; \n menangani pemisah baris
+    } else {
+      field += c
+    }
+  }
+  row.push(field)
+  rows.push(row)
+  return rows.filter((r) => r.some((cell) => cell.trim() !== ''))
+}
+
+/** Normalisasi angka gaya Indonesia: "1.234.567,89" -> 1234567.89 */
+function parseNumber(raw: string): number {
+  const s = raw.trim()
+  if (!s) return NaN
+  // Jika ada koma desimal (mis. 9.500,25) -> hilangkan titik pemisah ribuan.
+  if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) {
+    return Number(s.replace(/\./g, '').replace(',', '.'))
+  }
+  if (/^-?\d+,\d+$/.test(s)) return Number(s.replace(',', '.'))
+  return Number(s)
+}
+
+const HEADER_ALIASES: Record<string, keyof ImportRow> = {
+  symbol: 'symbol',
+  ticker: 'symbol',
+  kode: 'symbol',
+  simbol: 'symbol',
+  name: 'name',
+  nama: 'name',
+  nama_instrumen: 'name',
+  asset_class: 'asset_class',
+  kelas: 'asset_class',
+  jenis: 'asset_class',
+  kelas_aset: 'asset_class',
+  quantity: 'quantity',
+  jumlah: 'quantity',
+  qty: 'quantity',
+  unit: 'quantity',
+  lot: 'quantity',
+  avg_buy_price: 'avg_buy_price',
+  avg: 'avg_buy_price',
+  harga: 'avg_buy_price',
+  harga_beli: 'avg_buy_price',
+  harga_beli_rata: 'avg_buy_price',
+  harga_rata: 'avg_buy_price',
+  avg_price: 'avg_buy_price',
+}
+
+interface PreviewRow {
+  line: number
+  raw: string[]
+  data: ImportRow | null
+  issue: string | null
+}
+
+function buildPreview(text: string): { rows: PreviewRow[]; headerIssue: string | null } {
+  const trimmed = text.trim()
+  if (!trimmed) return { rows: [], headerIssue: 'Belum ada data.' }
+
+  const firstLine = trimmed.split(/\r?\n/, 1)[0]
+  const delimiter = firstLine.includes('\t') ? '\t' : ','
+  const grid = parseDelimited(trimmed, delimiter)
+  if (grid.length === 0) return { rows: [], headerIssue: 'Data kosong.' }
+
+  const header = grid[0].map((h) => h.trim().toLowerCase().replace(/\s+/g, '_'))
+  const idx = header.map((h) => HEADER_ALIASES[h] ?? null)
+
+  if (!idx.includes('symbol') || !idx.includes('quantity') || !idx.includes('avg_buy_price')) {
+    return {
+      rows: [],
+      headerIssue:
+        'Header tidak dikenali. Wajib ada kolom: symbol, quantity, avg_buy_price. (Opsional: name, asset_class)',
+    }
+  }
+
+  const rows: PreviewRow[] = grid.slice(1).map((cells, i) => {
+    const data: ImportRow = {
+      symbol: '',
+      name: '',
+      asset_class: '',
+      quantity: NaN,
+      avg_buy_price: NaN,
+    }
+    cells.forEach((cell, c) => {
+      const key = idx[c]
+      if (!key) return
+      if (key === 'quantity' || key === 'avg_buy_price') {
+        data[key] = parseNumber(cell)
+      } else {
+        data[key] = cell.trim()
+      }
+    })
+
+    let issue: string | null = null
+    if (!data.symbol) issue = 'symbol kosong'
+    else if (!Number.isFinite(data.quantity) || data.quantity <= 0) issue = 'quantity harus angka > 0'
+    else if (!Number.isFinite(data.avg_buy_price) || data.avg_buy_price <= 0)
+      issue = 'avg_buy_price harus angka > 0'
+
+    return { line: i + 1, raw: cells, data: issue ? null : data, issue }
+  })
+
+  return { rows, headerIssue: null }
+}
+
+const inputCls =
+  'w-full rounded-lg border border-white/[.08] bg-white/[.03] px-3 py-2 text-[13px] text-white placeholder:text-[#4a515e] outline-none transition-colors focus:border-cyan-500/50'
+
+export function ImportPortfolioButton() {
+  const router = useRouter()
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const [fileName, setFileName] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<{
+    inserted: number
+    merged: number
+    skipped: ImportRowError[]
+  } | null>(null)
+
+  const { rows, headerIssue } = buildPreview(text)
+  const valid = rows.filter((r) => r.data)
+  const invalid = rows.filter((r) => !r.data)
+
+  function reset() {
+    setText('')
+    setFileName(null)
+    setError(null)
+    setResult(null)
+  }
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) {
+      setError('File terlalu besar (maks 2 MB).')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      setText(String(reader.result ?? ''))
+      setFileName(file.name)
+      setError(null)
+      setResult(null)
+    }
+    reader.onerror = () => setError('Gagal membaca file.')
+    reader.readAsText(file)
+  }
+
+  async function handleSubmit() {
+    if (valid.length === 0) {
+      setError('Tidak ada baris valid untuk diimpor.')
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await importPortfolio(valid.map((r) => r.data!))
+      if (res.error) {
+        setError(res.error)
+      } else {
+        setResult({ inserted: res.inserted, merged: res.merged, skipped: res.skipped })
+        if (res.inserted > 0 || res.merged > 0) router.refresh()
+      }
+    } catch {
+      setError('Terjadi kesalahan tak terduga. Coba lagi.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const cls =
+    'cursor-pointer rounded-lg border border-white/[.08] bg-white/[.03] px-3.5 py-1.5 text-xs font-semibold text-[#c9ced8] transition-all hover:border-white/[.15] hover:bg-white/[.06] hover:text-white'
+
+  return (
+    <>
+      <button onClick={() => setOpen(true)} className={cls}>
+        Import CSV
+      </button>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-5 backdrop-blur-sm"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-white/[.07] bg-[#0e1015] p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-semibold text-white">Import Portofolio</h2>
+                <p className="mt-1 text-[12px] text-[#9aa0ac]">
+                  Upload file <b className="text-white">.csv</b> atau tempel tabel dari Excel/Google
+                  Sheets. Sistem mendeteksi simbol, jumlah, dan harga beli rata-rata, lalu menghitung
+                  gain/loss terhadap harga real-time.
+                </p>
+              </div>
+              <button
+                onClick={() => setOpen(false)}
+                aria-label="Tutup"
+                className="cursor-pointer text-[#646b78] transition-colors hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Contoh format */}
+            <div className="mb-4 rounded-lg border border-white/[.06] bg-white/[.02] p-3">
+              <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">
+                Format wajib
+              </p>
+              <pre className="overflow-x-auto rounded-md bg-black/40 p-2.5 text-[11px] leading-relaxed text-[#7ee0a3]">
+{`symbol,name,asset_class,quantity,avg_buy_price
+BBCA,Bank BCA,stock,1000,9500
+BTC,Bitcoin,crypto,0.05,950000000
+ANTM,Aneka Tambang,gold,100,15000`}
+              </pre>
+              <p className="mt-2 text-[11px] text-[#4a515e]">
+                Kolom <code className="text-[#9aa0ac]">name</code> dan{' '}
+                <code className="text-[#9aa0ac]">asset_class</code> opsional. Kelas aset yang
+                dikenali: stock, crypto, mutual_fund, bond, gold.
+              </p>
+            </div>
+
+            {/* Upload file */}
+            <div className="mb-3">
+              <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">
+                Upload file CSV
+              </label>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={handleFile}
+                className={inputCls + ' file:mr-3 file:cursor-pointer file:rounded file:border-0 file:bg-white/[.08] file:px-3 file:py-1 file:text-[11px] file:text-white'}
+              />
+              {fileName && (
+                <p className="mt-1.5 text-[11px] text-cyan-400">File terbaca: {fileName}</p>
+              )}
+            </div>
+
+            {/* Atau paste */}
+            <div className="mb-3">
+              <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">
+                Atau tempel data (CSV / TSV)
+              </label>
+              <textarea
+                value={text}
+                onChange={(e) => {
+                  setText(e.target.value)
+                  setFileName(null)
+                  setResult(null)
+                  setError(null)
+                }}
+                rows={6}
+                placeholder={'symbol,name,asset_class,quantity,avg_buy_price\nBBCA,Bank BCA,stock,1000,9500'}
+                className={inputCls + ' font-mono text-[12px]'}
+              />
+            </div>
+
+            {/* Preview */}
+            {headerIssue && (
+              <p
+                role="alert"
+                className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/[.07] px-3 py-2 text-[12px] text-amber-300"
+              >
+                {headerIssue}
+              </p>
+            )}
+
+            {!headerIssue && rows.length > 0 && (
+              <div className="mb-3">
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-300">
+                    {valid.length} valid
+                  </span>
+                  {invalid.length > 0 && (
+                    <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-red-300">
+                      {invalid.length} bermasalah
+                    </span>
+                  )}
+                </div>
+                <div className="max-h-52 overflow-auto rounded-lg border border-white/[.06]">
+                  <table className="w-full text-left text-[11px]">
+                    <thead className="sticky top-0 bg-[#14171d] text-[#9aa0ac]">
+                      <tr>
+                        <th className="px-3 py-2">#</th>
+                        <th className="px-3 py-2">Symbol</th>
+                        <th className="px-3 py-2">Nama</th>
+                        <th className="px-3 py-2">Kelas</th>
+                        <th className="px-3 py-2 text-right">Qty</th>
+                        <th className="px-3 py-2 text-right">Avg (Rp)</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/[.04]">
+                      {rows.slice(0, 100).map((r) => (
+                        <tr key={r.line} className={r.data ? '' : 'bg-red-500/[.05]'}>
+                          <td className="px-3 py-1.5 text-[#4a515e]">{r.line}</td>
+                          <td className="px-3 py-1.5 font-mono text-white">
+                            {r.raw[0] ?? '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-[#9aa0ac]">{r.data?.name || '—'}</td>
+                          <td className="px-3 py-1.5 text-[#9aa0ac]">
+                            {r.data?.asset_class || '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono text-white">
+                            {r.data ? r.data.quantity : '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono text-white">
+                            {r.data ? r.data.avg_buy_price : '—'}
+                          </td>
+                          <td
+                            className={`px-3 py-1.5 ${r.data ? 'text-emerald-400' : 'text-red-400'}`}
+                          >
+                            {r.data ? 'OK' : r.issue}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {rows.length > 100 && (
+                    <p className="px-3 py-2 text-[11px] text-[#4a515e]">
+                      Menampilkan 100 dari {rows.length} baris.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <p
+                role="alert"
+                className="mb-3 rounded-lg border border-red-500/20 bg-red-500/[.07] px-3 py-2 text-[12px] text-red-400"
+              >
+                {error}
+              </p>
+            )}
+
+            {result && (
+              <div className="mb-3 rounded-lg border border-emerald-500/20 bg-emerald-500/[.07] px-3 py-2.5 text-[12px] text-emerald-300">
+                <p className="font-semibold">
+                  Import selesai — {result.inserted} instrumen baru, {result.merged} digabung dengan
+                  posisi lama.
+                </p>
+                {result.skipped.length > 0 && (
+                  <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[11px] text-amber-300">
+                    {result.skipped.map((s) => (
+                      <li key={s.row}>
+                        Baris {s.row}: {s.message}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <button
+                type="button"
+                onClick={reset}
+                className="cursor-pointer text-[12px] text-[#646b78] transition-colors hover:text-white"
+              >
+                Bersihkan
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="cursor-pointer rounded-lg border border-white/[.08] px-3.5 py-2 text-[12px] text-[#9aa0ac] transition-colors hover:text-white"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={loading || valid.length === 0}
+                  className="cursor-pointer rounded-lg bg-cyan-500 px-4 py-2 text-[12px] font-semibold text-black transition-all hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {loading ? 'Mengimpor…' : `Impor ${valid.length} baris`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }

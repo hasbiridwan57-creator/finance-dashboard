@@ -10,7 +10,7 @@ import {
 import { CashflowChart, CategoryChart, PortfolioChart, Sparkline } from '@/components/charts'
 import { HoldingsTable } from '@/components/holdings-table'
 import { SidebarNav, PeriodToggle } from '@/components/nav'
-import { AddTransactionButton, AddAssetButton, SignOutButton } from '@/components/auth-actions'
+import { AddTransactionButton, AddAssetButton, ImportPortfolioButton, SignOutButton } from '@/components/auth-actions'
 import { LiveRefresher } from '@/components/live-refresher'
 import { formatIDR, formatCompact, formatMonth, formatPct, formatDay } from '@/lib/format'
 
@@ -39,8 +39,11 @@ export default async function DashboardPage({
   const delta = latestDelta(window)
   // Net-worth trend: cumulative net cash flow anchored at current net worth.
   const nwTrend = (() => {
-    let run = worth.net - flow.reduce((s, b) => s + b.net, 0)
-    return window.map((b) => (run += b.net))
+    const start = worth.net - flow.reduce((s, b) => s + b.net, 0)
+    return window.reduce<number[]>((acc, b) => {
+      acc.push((acc.length ? acc[acc.length - 1] : start) + b.net)
+      return acc
+    }, [])
   })()
 
   return (
@@ -108,6 +111,7 @@ export default async function DashboardPage({
               {user ? (
                 <>
                   <AddAssetButton accounts={accounts} />
+                  <ImportPortfolioButton />
                   <AddTransactionButton />
                 </>
               ) : null}

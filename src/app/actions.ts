@@ -271,3 +271,182 @@ export async function addAccount(input: {
   revalidatePath('/')
   return { error: null }
 }
+
+export interface ImportRow {
+  symbol: string
+  name: string
+  asset_class: string
+  quantity: number
+  avg_buy_price: number
+}
+
+export interface ImportRowError {
+  row: number // nomor baris data (1-based, tanpa header)
+  message: string
+}
+
+const VALID_ASSET_CLASS = new Set([
+  'stock',
+  'crypto',
+  'mutual_fund',
+  'bond',
+  'gold',
+])
+
+/** Simbol yang selalu dipaksa menjadi kelas aset crypto + nama resminya. */
+const CRYPTO_SYMBOLS: Record<string, string> = {
+  BTC: 'Bitcoin',
+  ETH: 'Ethereum',
+  SOL: 'Solana',
+  BNB: 'BNB',
+  ADA: 'Cardano',
+  DOGE: 'Dogecoin',
+  USDT: 'Tether',
+  SUI: 'Sui',
+}
+
+/**
+ * Import massal portofolio dari file CSV/Excel.
+ *
+ * - Validasi per baris: baris yang rusak TIDAK menggagalkan seluruh import —
+ *   dikumpulkan lalu dilaporkan agar pengguna tahu baris mana yang dilewati.
+ * - Posisi dengan simbol yang sama sudah ada akan digabung (weighted-average
+ *   cost), konsisten dengan addHolding.
+ * - TIDAK memotong saldo akun: ini import riwayat kepemilikan, bukan transaksi.
+ */
+export async function importPortfolio(rows: ImportRow[]) {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { error: 'Belum login.', inserted: 0, merged: 0, skipped: [] as ImportRowError[] }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { error: 'Tidak ada baris untuk diimport.', inserted: 0, merged: 0, skipped: [] }
+  }
+  if (rows.length > 500) {
+    return { error: 'Maksimal 500 baris per import.', inserted: 0, merged: 0, skipped: [] }
+  }
+
+  const skipped: ImportRowError[] = []
+  const prepared: Required<ImportRow>[] = []
+
+  rows.forEach((raw, i) => {
+    const rowNo = i + 1
+    const symbol = String(raw?.symbol ?? '').trim().toUpperCase()
+    if (!symbol) return skipped.push({ row: rowNo, message: 'Symbol kosong.' })
+    if (symbol.length > 32) return skipped.push({ row: rowNo, message: 'Symbol terlalu panjang (maks 32).' })
+
+    const qty = Number(raw?.quantity)
+    if (!Number.isFinite(qty) || qty <= 0)
+      return skipped.push({ row: rowNo, message: 'Jumlah unit harus angka > 0.' })
+
+    const avg = Number(raw?.avg_buy_price)
+    if (!Number.isFinite(avg) || avg <= 0)
+      return skipped.push({ row: rowNo, message: 'Harga beli rata-rata harus angka > 0.' })
+
+    let assetClass = String(raw?.asset_class ?? '').trim().toLowerCase()
+    if (CRYPTO_SYMBOLS[symbol]) assetClass = 'crypto'
+    if (!VALID_ASSET_CLASS.has(assetClass)) assetClass = 'stock'
+
+    const name =
+      CRYPTO_SYMBOLS[symbol] ??
+      String(raw?.name ?? '').trim() ??
+      symbol
+
+    prepared.push({
+      symbol,
+      name: name || symbol,
+      asset_class: assetClass,
+      quantity: qty,
+      avg_buy_price: avg,
+    })
+  })
+
+  if (prepared.length === 0) {
+    return { error: null, inserted: 0, merged: 0, skipped }
+  }
+
+  // Ambil posisi lama user untuk simbol-simbol ini (sekali query, bukan per baris).
+  const symbols = prepared.map((p) => p.symbol)
+  const { data: existingRows, error: selErr } = await supabase
+    .from('holdings')
+    .select('id, symbol, quantity, avg_buy_price')
+    .eq('user_id', user.id)
+    .in('symbol', symbols)
+
+  if (selErr) return { error: 'Gagal membaca portofolio lama.', inserted: 0, merged: 0, skipped }
+
+  const existingMap = new Map(
+    (existingRows ?? []).map((r) => [r.symbol, r]),
+  )
+
+  // Kelompokkan input per simbol agar baris duplikat dalam 1 file digabung.
+  const merged = new Map<string, { qty: number; cost: number; name: string; asset_class: string }>()
+  for (const p of prepared) {
+    const prev = merged.get(p.symbol)
+    if (prev) {
+      prev.qty += p.quantity
+      prev.cost += p.quantity * p.avg_buy_price
+      if (!prev.name) prev.name = p.name
+    } else {
+      merged.set(p.symbol, {
+        qty: p.quantity,
+        cost: p.quantity * p.avg_buy_price,
+        name: p.name,
+        asset_class: p.asset_class,
+      })
+    }
+  }
+
+  const inserts: unknown[] = []
+  let mergedCount = 0
+  const updates: PromiseLike<{ error: unknown }>[] = []
+
+  for (const [symbol, agg] of merged) {
+    const avg = agg.qty > 0 ? agg.cost / agg.qty : 0
+    const old = existingMap.get(symbol)
+
+    if (old) {
+      // Gabung dengan posisi lama (weighted-average cost), konsisten addHolding.
+      const oldQty = Number(old.quantity)
+      const oldAvg = Number(old.avg_buy_price)
+      const newQty = oldQty + agg.qty
+      const newAvg =
+        newQty > 0 ? (oldQty * oldAvg + agg.cost) / newQty : avg
+      mergedCount++
+      updates.push(
+        supabase
+          .from('holdings')
+          .update({ quantity: newQty, avg_buy_price: newAvg })
+          .eq('id', old.id)
+          .eq('user_id', user.id),
+      )
+    } else {
+      inserts.push({
+        user_id: user.id,
+        symbol,
+        name: agg.name || symbol,
+        asset_class: agg.asset_class,
+        quantity: agg.qty,
+        avg_buy_price: avg,
+        // current_price = avg sampai harga live menimpanya saat render.
+        current_price: avg,
+      })
+    }
+  }
+
+  if (inserts.length > 0) {
+    const { error } = await supabase.from('holdings').insert(inserts)
+    if (error) return { error: 'Gagal menyimpan portofolio. Coba lagi.', inserted: 0, merged: 0, skipped }
+  }
+
+  const updResults = await Promise.all(updates)
+  const updFailed = updResults.filter((r) => r.error)
+  if (updFailed.length > 0) {
+    return { error: `Gagal memperbarui ${updFailed.length} posisi lama.`, inserted: inserts.length, merged: mergedCount - updFailed.length, skipped }
+  }
+
+  revalidatePath('/')
+  return { error: null, inserted: inserts.length, merged: mergedCount, skipped }
+}
