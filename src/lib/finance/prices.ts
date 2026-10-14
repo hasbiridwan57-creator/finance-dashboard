@@ -1,7 +1,10 @@
 /**
- * Live price fetcher: Yahoo Finance (IDX stocks) + CoinGecko (crypto).
- * Mutual funds / unlisted instruments fall back to the stored last price.
- * Everything is denominated in IDR so PL is computed against avg_buy_price.
+ * Live price fetcher, all denominated in IDR so PL is computed against avg_buy_price.
+ *   stock       -> Yahoo Finance (.JK / IDX)
+ *   crypto      -> Binance IDR pairs, CoinGecko fallback
+ *   gold        -> COMEX GC=F (USD/oz) x USD/IDR, converted to Rp per gram
+ *   bond        -> retail par value (Rp 1.000.000/unit); no public feed exists
+ *   mutual_fund -> no public NAV API exists in Indonesia; keeps stored NAV
  */
 
 const UA = 'Mozilla/5.0 (finance-dashboard)'
@@ -124,6 +127,41 @@ async function fetchCrypto(symbols: string[]): Promise<Map<string, number>> {
   return out
 }
 
+// ---------------------------------------------------------------------------
+// Gold (physical / Antam / UBS / digital) — auto-derived IDR per gram.
+// Source: COMEX gold futures (GC=F, USD/troy-oz) x USD/IDR rate.
+// 1 troy ounce = 31.1034768 grams.
+// ---------------------------------------------------------------------------
+const GOLD_ALIASES = new Set(['EMAS', 'GOLD', 'ANTAM', 'UBS', 'XAU', 'LOGAMMULIA', 'DIGITALGOLD'])
+const TROY_OUNCE_IN_GRAMS = 31.1034768
+
+/** Symbols starting with these prefixes are treated as Indonesian retail bonds. */
+const BOND_PREFIX = /^(ORI|SR|FR|PBS|SBSN|SUKUK|ST|SBR|OBL)\d*/i
+
+export async function fetchGoldPerGram(): Promise<number | null> {
+  try {
+    const [goldRes, fxRes] = await Promise.all([
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=1d', {
+        headers: { 'User-Agent': UA },
+        next: { revalidate: 300 },
+      }),
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/USDIDR=X?interval=1d&range=1d', {
+        headers: { 'User-Agent': UA },
+        next: { revalidate: 300 },
+      }),
+    ])
+    if (!goldRes.ok || !fxRes.ok) return null
+    const goldJson = await goldRes.json()
+    const fxJson = await fxRes.json()
+    const usdPerOz = goldJson?.chart?.result?.[0]?.meta?.regularMarketPrice
+    const usdIdr = fxJson?.chart?.result?.[0]?.meta?.regularMarketPrice
+    if (typeof usdPerOz !== 'number' || typeof usdIdr !== 'number') return null
+    return Math.round((usdPerOz * usdIdr) / TROY_OUNCE_IN_GRAMS)
+  } catch {
+    return null
+  }
+}
+
 export interface PricedHolding {
   id?: string
   symbol: string
@@ -158,13 +196,39 @@ export async function applyLivePrices(
     fetchCrypto(crypto),
   ])
 
+  // Gold: one network call shared by every gold holding.
+  const needsGold = holdings.some(
+    (h) => h.asset_class === 'gold' || GOLD_ALIASES.has(h.symbol.toUpperCase()),
+  )
+  const goldPerGram = needsGold ? await fetchGoldPerGram() : null
+
   return holdings.map((h) => {
-    const livePx =
-      h.asset_class === 'stock'
-        ? stockPx.get(h.symbol)
-        : h.asset_class === 'crypto'
-          ? cryptoPx.get(h.symbol.toUpperCase())
-          : undefined
+    const sym = h.symbol.toUpperCase()
+
+    // Primary source by declared asset class.
+    let livePx: number | undefined
+    if (h.asset_class === 'stock') {
+      livePx = stockPx.get(h.symbol)
+    } else if (h.asset_class === 'crypto') {
+      livePx = cryptoPx.get(sym)
+    } else if (h.asset_class === 'gold') {
+      livePx = goldPerGram ?? undefined
+    }
+
+    // Gold aliases act as a FALLBACK only: a symbol like "GOLD" is also a real
+    // Yahoo ticker (Barrick Gold Corp), so the declared class wins and the
+    // alias only applies when that lookup produced nothing.
+    if (livePx == null && (h.asset_class === 'gold' || GOLD_ALIASES.has(sym))) {
+      livePx = goldPerGram ?? undefined
+    }
+
+    // Retail bonds are quoted at par: Rp 1.000.000 per unit. No public feed
+    // exists for Indonesian retail bonds, so fall back to par only when the
+    // stored price is unusable.
+    if (livePx == null && (h.asset_class === 'bond' || BOND_PREFIX.test(sym))) {
+      livePx = h.current_price > 0 ? undefined : 1_000_000
+    }
+
     return livePx != null
       ? { ...h, current_price: livePx, live: true }
       : { ...h, live: false }
