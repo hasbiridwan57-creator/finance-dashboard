@@ -129,3 +129,228 @@ export function avgMonthlyExpense(buckets: MonthBucket[]): number {
   if (buckets.length === 0) return 0
   return buckets.reduce((s, b) => s + b.expense, 0) / buckets.length
 }
+
+export function financialRatios(
+  worth: { assets: number; debts: number; net: number },
+  liquidCash: number,
+  portfolioValue: number,
+  buckets: MonthBucket[]
+) {
+  const burnRate = avgMonthlyExpense(buckets)
+  const runwayMonths = burnRate > 0 ? liquidCash / burnRate : null
+  const lastBucket = buckets.length > 0 ? buckets[buckets.length - 1] : null
+  const savingsRatePct = lastBucket && lastBucket.income > 0 
+    ? ((lastBucket.income - lastBucket.expense) / lastBucket.income) * 100 
+    : 0
+  const debtToAssetPct = worth.assets > 0 ? (worth.debts / worth.assets) * 100 : 0
+  const liquidityRatioPct = worth.assets > 0 ? (liquidCash / worth.assets) * 100 : 0
+  const investmentAllocationPct = worth.net > 0 ? (portfolioValue / worth.net) * 100 : 0
+
+  return {
+    burnRate,
+    runwayMonths,
+    savingsRatePct,
+    debtToAssetPct,
+    liquidityRatioPct,
+    investmentAllocationPct,
+  }
+}
+
+export function portfolioRiskMetrics(holdings: Holding[]) {
+  let totalValue = 0
+  for (const h of holdings) {
+    totalValue += h.quantity * h.current_price
+  }
+
+  const weights = holdings.map((h) => {
+    const v = h.quantity * h.current_price
+    const weightPct = totalValue > 0 ? (v / totalValue) * 100 : 0
+    return {
+      symbol: h.symbol,
+      name: h.name,
+      asset_class: h.asset_class,
+      value: v,
+      weightPct,
+      concentrated: weightPct > 25,
+    }
+  }).sort((a, b) => b.weightPct - a.weightPct)
+
+  let hhi = 0
+  if (totalValue > 0) {
+    for (const w of weights) {
+      const share = w.value / totalValue
+      hhi += share * share
+    }
+  }
+
+  let concentrationLevel: 'Low' | 'Moderate' | 'High' = 'Low'
+  if (totalValue > 0) {
+    if (hhi > 0.30) concentrationLevel = 'High'
+    else if (hhi >= 0.18) concentrationLevel = 'Moderate'
+    else concentrationLevel = 'Low'
+  }
+
+  const topHolding = weights[0] ?? null
+
+  return {
+    weights,
+    hhi,
+    concentrationLevel,
+    topHolding,
+  }
+}
+
+export function rebalanceDrift(
+  byClass: { assetClass: string; total: number }[],
+  totalValue: number,
+  targets: Record<string, number> = { stock: 45, crypto: 20, bond: 15, mutual_fund: 10, gold: 10 }
+) {
+  const classMap = new Map<string, number>()
+  for (const b of byClass) {
+    classMap.set(b.assetClass, b.total)
+  }
+
+  const allKeys = new Set([...Object.keys(targets), ...classMap.keys()])
+  const result = []
+
+  for (const assetClass of allKeys) {
+    const actualValue = classMap.get(assetClass) ?? 0
+    const actualPct = totalValue > 0 ? (actualValue / totalValue) * 100 : 0
+    const targetPct = targets[assetClass] ?? 0
+    const driftPct = actualPct - targetPct
+    const targetValue = (targetPct / 100) * totalValue
+    const actionAmount = targetValue - actualValue
+
+    let status: 'OVERWEIGHT' | 'UNDERWEIGHT' | 'ON_TARGET' = 'ON_TARGET'
+    if (driftPct > 5) status = 'OVERWEIGHT'
+    else if (driftPct < -5) status = 'UNDERWEIGHT'
+
+    result.push({
+      assetClass,
+      actualValue,
+      actualPct,
+      targetPct,
+      driftPct,
+      targetValue,
+      actionAmount,
+      status,
+    })
+  }
+
+  return result.sort((a, b) => b.targetPct - a.targetPct)
+}
+
+export type RiskProfileKey = 'conservative' | 'balanced' | 'aggressive'
+export const RISK_PRESETS: Record<RiskProfileKey, Record<string, number>> = {
+  conservative: { bond: 45, gold: 25, mutual_fund: 15, stock: 10, crypto: 5 },
+  balanced: { stock: 45, crypto: 20, bond: 15, mutual_fund: 10, gold: 10 },
+  aggressive: { stock: 50, crypto: 35, mutual_fund: 5, bond: 5, gold: 5 },
+}
+
+export function passiveIncomeMetrics(txs: Tx[], burnRate: number) {
+  const PASSIVE_CATEGORIES = new Set(['Dividen & Kupon', 'Bunga & Yield', 'Passive Income', 'Dividen'])
+  let totalPassiveIncome = 0
+  const passiveTxs = txs.filter((t) => {
+    if (t.type !== 'income') return false
+    const cat = t.category || ''
+    const isMatch = PASSIVE_CATEGORIES.has(cat) || /dividen|kupon|bunga|yield/i.test(cat)
+    if (isMatch) {
+      totalPassiveIncome += t.amount
+    }
+    return isMatch
+  })
+
+  const buckets = monthlyCashflow(txs)
+  if (buckets.length === 0) {
+    return {
+      totalPassiveIncome,
+      latestMonthPassive: 0,
+      monthlyAvgPassive: 0,
+      coverageRatioPct: 0,
+    }
+  }
+
+  const lastMonth = buckets[buckets.length - 1].month
+  let latestMonthPassive = 0
+  for (const t of passiveTxs) {
+    if (t.date && t.date.slice(0, 7) === lastMonth) {
+      latestMonthPassive += t.amount
+    }
+  }
+
+  const monthlyAvgPassive = totalPassiveIncome / buckets.length
+  const coverageRatioPct = burnRate > 0 ? (latestMonthPassive / burnRate) * 100 : 0
+
+  return {
+    totalPassiveIncome,
+    latestMonthPassive,
+    monthlyAvgPassive,
+    coverageRatioPct,
+  }
+}
+
+export function stressTestPortfolio(
+  holdings: Holding[],
+  worth: { assets: number; debts: number; net: number },
+  shocks: Record<string, number> = { crypto: -40, stock: -20, mutual_fund: -10, gold: -5, bond: -2 }
+) {
+  let basePortfolio = 0
+  let stressedPortfolio = 0
+
+  for (const h of holdings) {
+    const currentVal = h.quantity * h.current_price
+    basePortfolio += currentVal
+    const shockPct = shocks[h.asset_class] ?? -15
+    const stressedVal = Math.max(0, currentVal * (1 + shockPct / 100))
+    stressedPortfolio += stressedVal
+  }
+
+  const portfolioLoss = Math.max(0, basePortfolio - stressedPortfolio)
+  const portfolioDropPct = basePortfolio > 0 ? (portfolioLoss / basePortfolio) * 100 : 0
+  const stressedAssets = Math.max(0, worth.assets - portfolioLoss)
+  const stressedNetWorth = stressedAssets - worth.debts
+  const stressedDarPct = stressedAssets > 0 ? (worth.debts / stressedAssets) * 100 : 0
+
+  return {
+    basePortfolio,
+    stressedPortfolio,
+    portfolioLoss,
+    portfolioDropPct,
+    stressedAssets,
+    stressedNetWorth,
+    stressedDarPct,
+  }
+}
+
+export function topUpAllocation(
+  byClass: { assetClass: string; total: number }[],
+  totalValue: number,
+  freshCash: number,
+  targets: Record<string, number> = RISK_PRESETS.balanced
+) {
+  const baseDrift = rebalanceDrift(byClass, totalValue, targets)
+  if (!(freshCash > 0)) {
+    return baseDrift.map((d) => ({ ...d, topUpBuy: 0 }))
+  }
+
+  const newTotal = totalValue + freshCash
+  let totalDeficit = 0
+  const deficits = baseDrift.map((d) => {
+    const idealPostValue = (d.targetPct / 100) * newTotal
+    const deficit = Math.max(0, idealPostValue - d.actualValue)
+    totalDeficit += deficit
+    return { assetClass: d.assetClass, deficit, idealPostValue }
+  })
+
+  return baseDrift.map((d) => {
+    const defObj = deficits.find((x) => x.assetClass === d.assetClass)
+    const deficit = defObj ? defObj.deficit : 0
+    let topUpBuy = 0
+    if (totalDeficit > 0) {
+      topUpBuy = Math.round((deficit / totalDeficit) * freshCash)
+    } else {
+      topUpBuy = Math.round((d.targetPct / 100) * freshCash)
+    }
+    return { ...d, topUpBuy }
+  })
+}

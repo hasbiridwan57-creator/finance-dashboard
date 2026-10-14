@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 const NAV = [
   { label: 'Ringkasan', id: 'top' },
+  { label: 'Rasio & Risiko', id: 'rasio-risiko' },
   { label: 'Arus Kas', id: 'arus-kas' },
   { label: 'Portofolio', id: 'portofolio' },
   { label: 'Anggaran', id: 'anggaran' },

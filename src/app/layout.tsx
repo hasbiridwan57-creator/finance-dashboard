@@ -6,8 +6,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Finance Dashboard — Hasbi Ridwan",
-  description: "Kokpit keuangan pribadi: net worth, arus kas, dan portofolio investasi.",
+  title: "Wealth & Risk Terminal — Hasbi Ridwan",
+  description: "Quantitative portfolio analytics, real-time IDX/Crypto valuation, and automated liquidity & risk rebalancing engine.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

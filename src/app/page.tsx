@@ -6,7 +6,12 @@ import {
   netWorth,
   latestDelta,
   avgMonthlyExpense,
+  financialRatios,
+  portfolioRiskMetrics,
+  passiveIncomeMetrics,
 } from '@/lib/finance/aggregate'
+import { AccountsPanel } from '@/components/accounts-panel'
+import { RebalanceStressPanel } from '@/components/rebalance-stress-panel'
 import { CashflowChart, CategoryChart, PortfolioChart, Sparkline } from '@/components/charts'
 import { HoldingsTable } from '@/components/holdings-table'
 import { SidebarNav, PeriodToggle } from '@/components/nav'
@@ -35,6 +40,10 @@ export default async function DashboardPage({
     .reduce((sum, a) => sum + a.balance, 0)
   const burn = avgMonthlyExpense(flow)
 
+  const ratios = financialRatios(worth, liquidCash, portfolio.value, flow)
+  const risk = portfolioRiskMetrics(holdings)
+  const passive = passiveIncomeMetrics(transactions, ratios.burnRate)
+
   const window = flow.slice(-MONTHS)
   const delta = latestDelta(window)
   // Net-worth trend: cumulative net cash flow anchored at current net worth.
@@ -56,7 +65,7 @@ export default async function DashboardPage({
             H
           </div>
           <div>
-            <p className="text-sm font-semibold leading-tight">Finance</p>
+            <p className="text-sm font-semibold leading-tight">Wealth & Risk</p>
             <p className="text-[10px] leading-tight text-[#646b78]">Hasbi Ridwan</p>
           </div>
         </div>
@@ -93,13 +102,13 @@ export default async function DashboardPage({
           <header className="flex flex-wrap items-end justify-between gap-4">
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[.18em] text-emerald-400/90">
-                Personal Finance
+                Wealth & Portfolio Risk Management
               </p>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-                Dashboard
+                Portfolio & Liquidity Terminal
               </h1>
               <p className="mt-1.5 text-sm text-[#9aa0ac]">
-                Net worth, arus kas, dan portofolio — semua di satu layar.
+                Valuasi multi-aset real-time, matriks rasio likuiditas, analisis konsentrasi risiko, dan eksekusi rebalancing.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -112,7 +121,7 @@ export default async function DashboardPage({
                 <>
                   <AddAssetButton accounts={accounts} />
                   <ImportPortfolioButton />
-                  <AddTransactionButton />
+                  <AddTransactionButton accounts={accounts} />
                 </>
               ) : null}
               {user ? (
@@ -194,6 +203,56 @@ export default async function DashboardPage({
             </div>
           </section>
 
+          {/* Rasio & Risiko Section */}
+          <section id="rasio-risiko" className="animate-rise mt-8 scroll-mt-6">
+            <div className="mb-4">
+              <h2 className="text-sm font-semibold text-white">Financial Ratios & Portfolio Risk</h2>
+              <p className="mt-0.5 text-xs text-[#646b78]">Likuiditas, runway, solvabilitas, dan konsentrasi aset</p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {/* Card 1: Runway */}
+              <div className="rounded-2xl border border-white/[.06] bg-white/[.025] p-5">
+                <p className="text-[11px] font-medium uppercase tracking-widest text-[#646b78]">Liquidity Runway</p>
+                <p className={`mt-2 text-2xl font-semibold tabular-nums ${ratios.runwayMonths == null ? 'text-emerald-400' : ratios.runwayMonths >= 6 ? 'text-emerald-400' : ratios.runwayMonths >= 3 ? 'text-amber-300' : 'text-orange-400'}`}>
+                  {ratios.runwayMonths != null ? `${ratios.runwayMonths.toFixed(1)} bln` : '∞'}
+                </p>
+                <p className="mt-1 text-xs text-[#9aa0ac]">
+                  {ratios.runwayMonths == null ? 'Burn rate 0' : ratios.runwayMonths >= 6 ? 'Sehat (≥6 bln)' : ratios.runwayMonths >= 3 ? 'Moderat (3–6 bln)' : 'Kritis (<3 bln)'} · Kas {ratios.liquidityRatioPct.toFixed(0)}% aset
+                </p>
+              </div>
+              {/* Card 2: DAR */}
+              <div className="rounded-2xl border border-white/[.06] bg-white/[.025] p-5">
+                <p className="text-[11px] font-medium uppercase tracking-widest text-[#646b78]">Debt-to-Asset (DAR)</p>
+                <p className={`mt-2 text-2xl font-semibold tabular-nums ${ratios.debtToAssetPct < 30 ? 'text-emerald-400' : 'text-orange-400'}`}>
+                  {ratios.debtToAssetPct.toFixed(1)}%
+                </p>
+                <p className="mt-1 text-xs text-[#9aa0ac]">
+                  {ratios.debtToAssetPct < 30 ? 'Sehat (<30%)' : 'Leverage tinggi (≥30%)'}
+                </p>
+              </div>
+              {/* Card 3: Savings & Deployment */}
+              <div className="rounded-2xl border border-white/[.06] bg-white/[.025] p-5">
+                <p className="text-[11px] font-medium uppercase tracking-widest text-[#646b78]">Savings & Deployment</p>
+                <p className={`mt-2 text-2xl font-semibold tabular-nums ${ratios.savingsRatePct >= 20 ? 'text-emerald-400' : ratios.savingsRatePct >= 0 ? 'text-amber-300' : 'text-orange-400'}`}>
+                  {ratios.savingsRatePct.toFixed(1)}%
+                </p>
+                <p className="mt-1 text-xs text-[#9aa0ac]">
+                  Tabungan bln ini · Inv: {ratios.investmentAllocationPct.toFixed(0)}% · Passive cover: {passive.coverageRatioPct.toFixed(0)}%
+                </p>
+              </div>
+              {/* Card 4: Concentration HHI */}
+              <div className="rounded-2xl border border-white/[.06] bg-white/[.025] p-5">
+                <p className="text-[11px] font-medium uppercase tracking-widest text-[#646b78]">Concentration Risk (HHI)</p>
+                <p className="mt-2 text-2xl font-semibold tabular-nums text-white">
+                  {risk.hhi.toFixed(2)} <span className="text-xs font-normal text-[#9aa0ac]">({risk.concentrationLevel})</span>
+                </p>
+                <p className="mt-1 text-xs text-[#9aa0ac]">
+                  Terbesar: {risk.topHolding ? `${risk.topHolding.symbol} (${risk.topHolding.weightPct.toFixed(1)}%)` : '—'}
+                </p>
+              </div>
+            </div>
+          </section>
+
           {/* Stat cards */}
           <section className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <StatCard
@@ -242,16 +301,31 @@ export default async function DashboardPage({
           </section>
 
           {/* Row: allocation + holdings */}
-          <section id="portofolio" className="animate-rise stagger-2 mt-4 grid gap-4 lg:grid-cols-3 scroll-mt-6">
-            <Panel title="Alokasi Aset" hint="Nilai pasar per kelas aset">
-              <PortfolioChart data={portfolio.byClass} costByClass={portfolio.costByClass} />
-            </Panel>
+          <section id="portofolio" className="animate-rise stagger-2 mt-4 space-y-4 scroll-mt-6">
+            <div className="grid gap-4 lg:grid-cols-3">
+              <Panel title="Alokasi Aset" hint="Nilai pasar per kelas aset">
+                <PortfolioChart data={portfolio.byClass} costByClass={portfolio.costByClass} />
+              </Panel>
+              <Panel
+                title="Kepemilikan"
+                hint="Posisi & untung/rugi per instrumen · harga real-time"
+                className="lg:col-span-2"
+              >
+                <HoldingsTable holdings={holdings} accounts={accounts} />
+              </Panel>
+            </div>
+
+            {/* Rebalancing Engine Panel */}
             <Panel
-              title="Kepemilikan"
-              hint="Posisi & untung/rugi per instrumen · harga real-time"
-              className="lg:col-span-2"
+              title="Target Allocation & Rebalancing Engine"
+              hint="Simulasi profil risiko dinamis, alokasi top-up dana baru, dan skenario market crash"
             >
-              <HoldingsTable holdings={holdings} />
+              <RebalanceStressPanel
+                holdings={holdings}
+                byClass={portfolio.byClass}
+                totalValue={portfolio.value}
+                worth={worth}
+              />
             </Panel>
           </section>
 
@@ -259,6 +333,13 @@ export default async function DashboardPage({
           <section id="anggaran" className="animate-rise stagger-3 mt-4 grid gap-4 lg:grid-cols-3 scroll-mt-6">
             <Panel title="Progress Anggaran" hint={`Pengeluaran vs rata-rata ${MONTHS} bulan`}>
               <BudgetGauge spent={delta?.last.expense ?? 0} baseline={burn} />
+            </Panel>
+            <Panel
+              className="lg:col-span-2"
+              hint="Rincian saldo bank, e-wallet, utang, dan transfer antar-akun"
+              title="Manajemen Akun & Likuiditas"
+            >
+              <AccountsPanel accounts={accounts} isLoggedIn={Boolean(user)} />
             </Panel>
           </section>
 

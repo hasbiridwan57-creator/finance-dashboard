@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { updateHolding, deleteHolding } from '@/app/actions'
+import { updateHolding, deleteHolding, sellHolding } from '@/app/actions'
 import { useRouter } from 'next/navigation'
 import { formatIDR, formatCompact, formatPct } from '@/lib/format'
 
@@ -47,11 +47,22 @@ export interface HoldingRow {
   live?: boolean
 }
 
-export function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) {
+export function HoldingsTable({
+  holdings,
+  accounts = [],
+}: {
+  holdings: HoldingRow[]
+  accounts?: { name: string; kind: string }[]
+}) {
   const [editing, setEditing] = useState<string | null>(null)
+  const [selling, setSelling] = useState<string | null>(null)
   const router = useRouter()
 
   const liveCount = holdings.filter((h) => h.live).length
+  const totalPortfolioValue = holdings.reduce(
+    (sum, h) => sum + h.quantity * h.current_price,
+    0,
+  )
 
   return (
     <div className="overflow-x-auto">
@@ -73,6 +84,7 @@ export function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) {
             <th className="pb-3 pr-4 text-right font-medium">Harga Rata</th>
             <th className="pb-3 pr-4 text-right font-medium">Harga Kini</th>
             <th className="pb-3 pr-4 text-right font-medium">Nilai Pasar</th>
+            <th className="pb-3 pr-4 text-right font-medium">Bobot</th>
             <th className="pb-3 text-right font-medium">U/R</th>
             <th className="pb-3 font-medium"></th>
           </tr>
@@ -84,6 +96,25 @@ export function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) {
               h.avg_buy_price > 0
                 ? ((h.current_price - h.avg_buy_price) / h.avg_buy_price) * 100
                 : 0
+            const weightPct =
+              totalPortfolioValue > 0
+                ? ((h.quantity * h.current_price) / totalPortfolioValue) * 100
+                : 0
+
+            if (selling === (h.id ?? h.symbol)) {
+              return (
+                <SellRow
+                  key={h.id ?? h.symbol}
+                  holding={h}
+                  accounts={accounts}
+                  onClose={() => setSelling(null)}
+                  onDone={() => {
+                    setSelling(null)
+                    router.refresh()
+                  }}
+                />
+              )
+            }
 
             if (editing === (h.id ?? h.symbol)) {
               return (
@@ -109,6 +140,11 @@ export function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) {
                     <div>
                       <span className="font-medium text-white">{h.symbol}</span>
                       <span className="block text-[11px] text-[#646b78]">{h.name}</span>
+                      {weightPct > 25 && (
+                        <span className="mt-1 inline-block rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-300">
+                          Concentration &gt;25%
+                        </span>
+                      )}
                     </div>
                   </div>
                 </td>
@@ -130,6 +166,9 @@ export function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) {
                 <td className="py-3 pr-4 text-right font-medium tabular-nums text-white">
                   {formatIDR(h.quantity * h.current_price, { compact: true })}
                 </td>
+                <td className="py-3 pr-4 text-right tabular-nums text-[#c9ced8]">
+                  {weightPct.toFixed(1)}%
+                </td>
                 <td
                   className={`py-3 text-right font-medium tabular-nums ${pl >= 0 ? 'text-emerald-400' : 'text-orange-400'}`}
                 >
@@ -138,6 +177,14 @@ export function HoldingsTable({ holdings }: { holdings: HoldingRow[] }) {
                 </td>
                 <td className="py-3 pl-2">
                   <div className="flex items-center gap-1">
+                    {h.id && (
+                      <button
+                        onClick={() => setSelling(h.id ?? h.symbol)}
+                        className="cursor-pointer rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 transition-colors hover:bg-emerald-500/20 hover:text-emerald-200"
+                      >
+                        Jual
+                      </button>
+                    )}
                     <button
                       onClick={() => setEditing(h.id ?? h.symbol)}
                       className="cursor-pointer rounded-md border border-white/[.08] px-2 py-1 text-[10px] text-[#9aa0ac] transition-colors hover:bg-white/[.06] hover:text-white"
@@ -202,7 +249,7 @@ function EditRow({
 
   return (
     <tr className="bg-white/[.02]">
-      <td colSpan={7} className="p-4">
+      <td colSpan={9} className="p-4">
         <form onSubmit={submit} className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <div className="col-span-2 sm:col-span-1">
             <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[#9aa0ac]">
@@ -242,7 +289,7 @@ function EditRow({
           </div>
           <div className="col-span-2 flex items-end gap-2 sm:col-span-1">
             <button type="submit" disabled={loading} className={submitCls}>
-              {loading ? '…' : 'Simpan'}
+              {loading ? '...' : 'Simpan'}
             </button>
             <button
               type="button"
@@ -254,6 +301,154 @@ function EditRow({
           </div>
           {error && (
             <p className="col-span-3 rounded-lg border border-red-500/20 bg-red-500/[.07] px-3 py-2 text-[12px] text-red-400">
+              {error}
+            </p>
+          )}
+        </form>
+      </td>
+    </tr>
+  )
+}
+
+function SellRow({
+  holding,
+  accounts,
+  onClose,
+  onDone,
+}: {
+  holding: HoldingRow
+  accounts: { name: string; kind: string }[]
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [sellQuantity, setSellQuantity] = useState(String(holding.quantity))
+  const [sellPrice, setSellPrice] = useState(String(holding.current_price))
+  const [targetAccount, setTargetAccount] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const cashAccounts = accounts.filter(
+    (a) => a.kind !== 'debt' && a.kind !== 'investment',
+  )
+
+  const qty = Number(sellQuantity) || 0
+  const price = Number(sellPrice) || 0
+  const proceeds = qty * price
+  const costBasis = qty * holding.avg_buy_price
+  const realizedPL = proceeds - costBasis
+  const plPct = costBasis > 0 ? (realizedPL / costBasis) * 100 : 0
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setLoading(true)
+    const res = await sellHolding({
+      id: holding.id!,
+      sellQuantity: qty,
+      sellPrice: price,
+      targetAccount: targetAccount || undefined,
+    })
+    setLoading(false)
+    if (res.error) { setError(res.error); return }
+    onDone()
+  }
+
+  return (
+    <tr className="bg-emerald-500/[.03]">
+      <td colSpan={9} className="p-4">
+        <form onSubmit={submit} className="space-y-3">
+          <p className="text-[12px] font-semibold text-white">
+            Jual Sebagian / Seluruh {holding.symbol}
+            <span className="ml-2 font-normal text-[#646b78]">
+              Kepemilikan: {holding.quantity.toLocaleString('id-ID')} unit · Harga rata-rata{' '}
+              {formatIDR(holding.avg_buy_price, { compact: true })}
+            </span>
+          </p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[#9aa0ac]">
+                Jumlah Unit Dijual
+              </label>
+              <input
+                type="number"
+                required
+                min="0"
+                max={holding.quantity}
+                step="any"
+                value={sellQuantity}
+                onChange={(e) => setSellQuantity(e.target.value)}
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[#9aa0ac]">
+                Harga Jual per Unit (Rp)
+              </label>
+              <input
+                type="number"
+                required
+                min="0"
+                step="any"
+                value={sellPrice}
+                onChange={(e) => setSellPrice(e.target.value)}
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[#9aa0ac]">
+                Akun Kas Tujuan
+              </label>
+              <select
+                value={targetAccount}
+                onChange={(e) => setTargetAccount(e.target.value)}
+                className={selectCls}
+              >
+                <option value="" className="bg-[#0e1015]">
+                  Jangan masukkan ke saldo akun kas
+                </option>
+                {cashAccounts.map((a) => (
+                  <option key={a.name} value={a.name} className="bg-[#0e1015]">
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Real-time preview */}
+          <div className="flex flex-wrap gap-x-8 gap-y-2 rounded-lg border border-white/[.06] bg-white/[.02] px-3.5 py-3 text-[12px]">
+            <span className="text-[#9aa0ac]">
+              Estimasi Dana Masuk:{' '}
+              <span className="font-medium tabular-nums text-white">
+                {formatIDR(proceeds, { compact: true })}
+              </span>
+            </span>
+            <span className="text-[#9aa0ac]">
+              Estimasi Realized P/L:{' '}
+              <span
+                className={`font-medium tabular-nums ${
+                  realizedPL >= 0 ? 'text-emerald-400' : 'text-orange-400'
+                }`}
+              >
+                {formatIDR(realizedPL, { compact: true })} ({formatPct(plPct)})
+              </span>
+            </span>
+          </div>
+
+          <div className="flex items-end gap-2">
+            <button type="submit" disabled={loading} className={`${submitCls} sm:w-auto sm:px-6`}>
+              {loading ? '...' : 'Konfirmasi Jual'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="cursor-pointer rounded-lg border border-white/[.08] px-3.5 py-3 text-sm font-medium text-[#9aa0ac] transition-colors hover:bg-white/[.04] hover:text-white"
+            >
+              Batal
+            </button>
+          </div>
+          {error && (
+            <p className="rounded-lg border border-red-500/20 bg-red-500/[.07] px-3 py-2 text-[12px] text-red-400">
               {error}
             </p>
           )}

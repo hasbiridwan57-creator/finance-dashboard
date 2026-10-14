@@ -1,7 +1,7 @@
 // Generate 6 months of realistic dummy transactions for a fresh-graduate
 // Indonesian profile: salary ~Rp6.5M, side income, real expense distribution.
 // Deterministic (seeded RNG) so re-runs produce identical data.
-import type { Account, Holding } from '@/lib/finance/aggregate'
+import type { Account } from '@/lib/finance/aggregate'
 
 function mulberry32(seed: number) {
   return function () {

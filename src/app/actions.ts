@@ -202,11 +202,12 @@ export async function updateHolding(input: {
   let assetClass = input.asset_class
   let name = input.name
   const sym = input.symbol.trim().toUpperCase()
-  if (['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'DOGE', 'USDT'].includes(sym)) {
+  if (['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'DOGE', 'USDT', 'SUI'].includes(sym)) {
     assetClass = 'crypto'
     if (sym === 'ETH') name = 'Ethereum'
     if (sym === 'BTC') name = 'Bitcoin'
     if (sym === 'SOL') name = 'Solana'
+    if (sym === 'SUI') name = 'Sui'
   }
 
   const { error } = await supabase
@@ -244,6 +245,104 @@ export async function deleteHolding(input: { id: string }) {
 
   revalidatePath('/')
   return { error: null }
+}
+
+export async function sellHolding(input: {
+  id: string
+  sellQuantity: number
+  sellPrice: number
+  targetAccount?: string
+}) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Belum login.' }
+
+  if (!(input.sellQuantity > 0)) return { error: 'Jumlah unit yang dijual harus lebih dari 0.' }
+  if (!(input.sellPrice > 0)) return { error: 'Harga jual harus lebih dari 0.' }
+
+  const { data: existing, error: fetchErr } = await supabase
+    .from('holdings')
+    .select('id, symbol, name, asset_class, quantity, avg_buy_price')
+    .eq('id', input.id)
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  if (fetchErr || !existing) return { error: 'Instrumen portofolio tidak ditemukan.' }
+
+  const currentQty = Number(existing.quantity)
+  if (input.sellQuantity > currentQty) {
+    return { error: 'Jumlah unit yang dijual melebihi kepemilikan.' }
+  }
+
+  const proceeds = input.sellQuantity * input.sellPrice
+  const costBasisSold = input.sellQuantity * Number(existing.avg_buy_price)
+  const realizedPL = proceeds - costBasisSold
+
+  // Update or Delete holding
+  if (input.sellQuantity >= currentQty) {
+    const { error: delErr } = await supabase
+      .from('holdings')
+      .delete()
+      .eq('id', input.id)
+      .eq('user_id', user.id)
+    if (delErr) return { error: 'Gagal menghapus posisi instrumen.' }
+  } else {
+    const newQty = currentQty - input.sellQuantity
+    const { error: updErr } = await supabase
+      .from('holdings')
+      .update({ quantity: newQty })
+      .eq('id', input.id)
+      .eq('user_id', user.id)
+    if (updErr) return { error: 'Gagal memperbarui sisa unit instrumen.' }
+  }
+
+  // Handle target account & transaction log
+  if (input.targetAccount && input.targetAccount.trim() !== '') {
+    const { data: acc } = await supabase
+      .from('accounts')
+      .select('id, kind')
+      .eq('user_id', user.id)
+      .eq('name', input.targetAccount)
+      .maybeSingle()
+
+    if (acc && acc.kind !== 'debt') {
+      await supabase.rpc('bump_account_balance', {
+        p_uid: user.id,
+        p_account: input.targetAccount,
+        p_delta: proceeds,
+      })
+
+      // Catat HANYA jika ada Realized Gain / Loss murni (selisih harga jual vs cost basis)
+      // Pokok investasi (return of principal) masuk ke saldo kas via RPC di atas,
+      // bukan sebagai pemasukan operasional/cashflow agar Savings Rate tidak menggelembung palsu.
+      const absPL = Math.round(Math.abs(realizedPL))
+      if (absPL > 0) {
+        const { data: cat } = await supabase
+          .from('categories')
+          .select('id')
+          .eq('name', 'Lainnya')
+          .maybeSingle()
+
+        const isGain = realizedPL > 0
+        const formattedProceeds = Math.round(proceeds).toLocaleString('id-ID')
+        const descPrefix = isGain ? 'Realized Gain Jual' : 'Realized Loss Jual'
+
+        await supabase.from('transactions').insert({
+          user_id: user.id,
+          amount: absPL,
+          type: isGain ? 'income' : 'expense',
+          category_id: cat?.id ?? null,
+          description: `${descPrefix} ${input.sellQuantity} ${existing.symbol} (Proceeds: Rp ${formattedProceeds})`,
+          date: new Date().toISOString().slice(0, 10),
+          account: input.targetAccount,
+          source: 'manual',
+        })
+      }
+    }
+  }
+
+  revalidatePath('/')
+  return { error: null, realizedPL, proceeds }
 }
 
 export async function addAccount(input: {
@@ -449,4 +548,121 @@ export async function importPortfolio(rows: ImportRow[]) {
 
   revalidatePath('/')
   return { error: null, inserted: inserts.length, merged: mergedCount, skipped }
+}
+
+export async function updateAccountBalance(input: { name: string; balance: number }) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Belum login.' }
+
+  if (!Number.isFinite(input.balance)) {
+    return { error: 'Nominal saldo tidak valid.' }
+  }
+
+  const { error } = await supabase
+    .from('accounts')
+    .update({ balance: input.balance })
+    .eq('user_id', user.id)
+    .eq('name', input.name)
+
+  if (error) return { error: 'Gagal memperbarui saldo akun.' }
+  revalidatePath('/')
+  return { error: null }
+}
+
+export async function deleteAccount(input: { name: string }) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Belum login.' }
+
+  const { error } = await supabase
+    .from('accounts')
+    .delete()
+    .eq('user_id', user.id)
+    .eq('name', input.name)
+
+  if (error) return { error: 'Gagal menghapus akun.' }
+  revalidatePath('/')
+  return { error: null }
+}
+
+export async function transferBetweenAccounts(input: {
+  fromAccount: string
+  toAccount: string
+  amount: number
+}) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Belum login.' }
+
+  if (!(input.amount > 0)) {
+    return { error: 'Jumlah transfer harus lebih dari 0.' }
+  }
+  if (input.fromAccount === input.toAccount) {
+    return { error: 'Akun sumber dan akun tujuan tidak boleh sama.' }
+  }
+
+  // Fetch both accounts
+  const { data: accs, error: fetchErr } = await supabase
+    .from('accounts')
+    .select('id, name, kind, balance')
+    .eq('user_id', user.id)
+    .in('name', [input.fromAccount, input.toAccount])
+
+  if (fetchErr || !accs || accs.length < 2) {
+    return { error: 'Akun sumber atau akun tujuan tidak ditemukan.' }
+  }
+
+  const fromAcc = accs.find((a) => a.name === input.fromAccount)
+  const toAcc = accs.find((a) => a.name === input.toAccount)
+
+  if (!fromAcc || !toAcc) {
+    return { error: 'Akun sumber atau akun tujuan tidak valid.' }
+  }
+
+  if (fromAcc.kind === 'investment' || toAcc.kind === 'investment') {
+    return { error: 'Gunakan menu Tambah/Jual Aset untuk mutasi instrumen investasi.' }
+  }
+
+  if (fromAcc.kind === 'debt') {
+    return { error: 'Akun utang tidak dapat digunakan sebagai akun sumber transfer.' }
+  }
+
+  if (Number(fromAcc.balance) < input.amount) {
+    return { error: 'Saldo akun sumber tidak mencukupi.' }
+  }
+
+  // Deduct from fromAccount
+  const { error: bumpFromErr } = await supabase.rpc('bump_account_balance', {
+    p_uid: user.id,
+    p_account: fromAcc.name,
+    p_delta: -input.amount,
+  })
+  if (bumpFromErr) return { error: 'Gagal mengurangi saldo akun sumber.' }
+
+  // Credit to toAccount
+  if (toAcc.kind === 'debt') {
+    const currentDebtBal = Number(toAcc.balance)
+    const newBalance = currentDebtBal < 0
+      ? Math.min(0, currentDebtBal + input.amount)
+      : Math.max(0, currentDebtBal - input.amount)
+
+    const { error: updDebtErr } = await supabase
+      .from('accounts')
+      .update({ balance: newBalance })
+      .eq('id', toAcc.id)
+      .eq('user_id', user.id)
+
+    if (updDebtErr) return { error: 'Gagal memperbarui saldo utang akun tujuan.' }
+  } else {
+    const { error: bumpToErr } = await supabase.rpc('bump_account_balance', {
+      p_uid: user.id,
+      p_account: toAcc.name,
+      p_delta: input.amount,
+    })
+    if (bumpToErr) return { error: 'Gagal menambah saldo akun tujuan.' }
+  }
+
+  revalidatePath('/')
+  return { error: null }
 }

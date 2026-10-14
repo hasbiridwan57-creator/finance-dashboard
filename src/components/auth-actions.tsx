@@ -8,6 +8,8 @@ import { useRouter } from 'next/navigation'
 const CATEGORIES = [
   { name: 'Gaji', type: 'income' },
   { name: 'Freelance', type: 'income' },
+  { name: 'Dividen & Kupon', type: 'income' },
+  { name: 'Bunga & Yield', type: 'income' },
   { name: 'Makan & Minum', type: 'expense' },
   { name: 'Transport', type: 'expense' },
   { name: 'Kuliah', type: 'expense' },
@@ -20,19 +22,25 @@ const CATEGORIES = [
 
 const ACCOUNTS = ['BCA Utama', 'GoPay', 'OVO', 'Tunai Dompet']
 
-export function AddTransactionButton() {
-  const supabase = createClient()
+export function AddTransactionButton({
+  accounts = [],
+}: {
+  accounts?: { name: string; kind: string }[]
+}) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const operationalAccounts = accounts.filter((a) => a.kind !== 'investment')
+  const accountNames = operationalAccounts.length > 0 ? operationalAccounts.map((a) => a.name) : ACCOUNTS
 
   const [type, setType] = useState<'income' | 'expense'>('expense')
   const [amount, setAmount] = useState('')
   const [category, setCategory] = useState('Makan & Minum')
   const [description, setDescription] = useState('')
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [account, setAccount] = useState('BCA Utama')
+  const [account, setAccount] = useState(() => accountNames[0] || 'BCA Utama')
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -186,7 +194,7 @@ export function AddTransactionButton() {
                     onChange={(e) => setAccount(e.target.value)}
                     className="w-full cursor-pointer rounded-lg border border-white/[.08] bg-[#0e1015] px-3 py-2.5 text-sm text-white outline-none transition-colors focus:border-emerald-500/40"
                   >
-                    {ACCOUNTS.map((a) => (
+                    {accountNames.map((a) => (
                       <option key={a} value={a} className="bg-[#0e1015]">
                         {a}
                       </option>
@@ -305,7 +313,6 @@ export function AddAssetButton({ accounts = [] }: { accounts?: { name: string; k
     const finalSym = symbol.trim().toUpperCase()
     const finalQty = inputMode === 'nominal' ? Number(quantity) : Number(quantity)
     const finalPrice = inputMode === 'nominal' ? Number(avgPrice) : Number(avgPrice)
-    const totalCost = finalQty * finalPrice
 
     // If sourceAccount is set, the RPC call in addHolding handles the deduction
     const res = await addHolding({
