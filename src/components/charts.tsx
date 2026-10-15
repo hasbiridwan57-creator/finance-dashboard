@@ -322,7 +322,6 @@ export function PortfolioChart({
                     pl >= 0 ? 'text-emerald-400' : 'text-orange-400'
                   }`}
                 >
-                  {pl >= 0 ? '+' : ''}
                   {formatPct(plPct)}
                 </span>
               )}
