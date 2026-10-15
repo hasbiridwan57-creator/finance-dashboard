@@ -20,14 +20,29 @@ export async function addTransaction(input: {
   // Validasi: amount harus positif
   if (!(input.amount > 0)) return { error: 'Nominal harus lebih dari 0.' }
 
-  // Validasi: akun harus ada & milik user
-  const { data: acc } = await supabase
+  // Validasi: akun harus ada & milik user (auto-create jika belum ada agar tidak pernah buntu)
+  let { data: acc } = await supabase
     .from('accounts')
     .select('id')
     .eq('user_id', user.id)
     .eq('name', input.account)
     .maybeSingle()
-  if (!acc) return { error: 'Akun tidak ditemukan. Pilih akun yang tersedia.' }
+
+  if (!acc) {
+    const { data: created } = await supabase
+      .from('accounts')
+      .insert({
+        user_id: user.id,
+        name: input.account || 'BCA',
+        kind: 'bank',
+        balance: 0,
+      })
+      .select('id')
+      .maybeSingle()
+    acc = created
+  }
+
+  if (!acc) return { error: 'Gagal membuat atau menemukan akun.' }
 
   // Resolve category name → id (categories are a shared lookup table).
   const { data: cat } = await supabase

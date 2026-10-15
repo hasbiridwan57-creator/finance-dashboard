@@ -35,18 +35,18 @@ Exit code: **0**
 
 ▲ Next.js 16.3.6 (Turbopack)
 - Environments: .env.local
-✓ Running next.config.ts took 101ms
+✓ Running next.config.ts took 61ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 793ms
+✓ Compiled successfully in 472ms
   Running TypeScript ...
-  Finished TypeScript in 1212ms ...
+  Finished TypeScript in 1038ms ...
   Collecting page data using 7 workers ...
   Generating static pages using 7 workers (0/7) ...
   Generating static pages using 7 workers (1/7) 
   Generating static pages using 7 workers (3/7) 
   Generating static pages using 7 workers (5/7) 
-✓ Generating static pages using 7 workers (7/7) in 128ms
+✓ Generating static pages using 7 workers (7/7) in 121ms
   Finalizing page optimization ...
 
 Route (app)
@@ -490,7 +490,7 @@ export function topUpAllocation(
 
 ### C.2 `src/app/actions.ts`
 
-_699 baris · 21,166 karakter_
+_690 baris · 20,857 karakter_
 
 ```typescript
 'use server'
@@ -515,7 +515,7 @@ export async function addTransaction(input: {
   // Validasi: amount harus positif
   if (!(input.amount > 0)) return { error: 'Nominal harus lebih dari 0.' }
 
-  // Validasi: akun harus ada & milik user
+  // Validasi: akun harus ada & milik user (auto-create jika belum ada agar tidak pernah buntu)
   let { data: acc } = await supabase
     .from('accounts')
     .select('id')
@@ -523,30 +523,21 @@ export async function addTransaction(input: {
     .eq('name', input.account)
     .maybeSingle()
 
-  // Bootstrap: user yang benar-benar belum punya akun (pendaftar baru) tidak
-  // boleh buntu di transaksi pertama. Buat akun default pada nama yang dipilih.
   if (!acc) {
-    const { count } = await supabase
+    const { data: created } = await supabase
       .from('accounts')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-
-    if (!count) {
-      const { data: created } = await supabase
-        .from('accounts')
-        .insert({
-          user_id: user.id,
-          name: input.account || 'BCA',
-          kind: 'bank',
-          balance: 0,
-        })
-        .select('id')
-        .maybeSingle()
-      acc = created
-    }
+      .insert({
+        user_id: user.id,
+        name: input.account || 'BCA',
+        kind: 'bank',
+        balance: 0,
+      })
+      .select('id')
+      .maybeSingle()
+    acc = created
   }
 
-  if (!acc) return { error: 'Akun tidak ditemukan. Pilih akun yang tersedia.' }
+  if (!acc) return { error: 'Gagal membuat atau menemukan akun.' }
 
   // Resolve category name → id (categories are a shared lookup table).
   const { data: cat } = await supabase
@@ -4779,4 +4770,4 @@ console.log('scripts/checks/check-aggregate.ts: all quantitative checks passed!'
 
 ---
 
-**Total baris 12 file: 4,569.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
+**Total baris 12 file: 4,560.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
