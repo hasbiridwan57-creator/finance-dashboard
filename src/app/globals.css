@@ -98,3 +98,101 @@ body::before {
   background: rgba(110, 231, 183, 0.24);
   color: #fff;
 }
+
+/* ==========================================================================
+   PRINT / PDF — Executive IPS & Financial Audit Report
+   Triggered by the "Export IPS Report (PDF)" button (window.print()) or Cmd+P.
+   Turns the dark dashboard into a clean institutional document: chrome is
+   removed, sections never split across pages, and the palette is inverted to
+   ink-on-paper for legibility and printer economy.
+   ========================================================================== */
+@media print {
+  @page {
+    margin: 14mm 12mm;
+  }
+
+  /* 1. Strip interactive chrome. */
+  aside,
+  button,
+  form,
+  .no-print,
+  nav,
+  input,
+  select,
+  [role='dialog'] {
+    display: none !important;
+  }
+
+  /* 2. Light, high-contrast paper palette. */
+  html,
+  body {
+    background: #ffffff !important;
+    color: #111418 !important;
+  }
+
+  main,
+  section,
+  div,
+  table,
+  thead,
+  tbody,
+  tr,
+  td,
+  th,
+  p,
+  span,
+  h1,
+  h2,
+  h3,
+  h4 {
+    background: transparent !important;
+    color: #111418 !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  section,
+  .rounded-xl,
+  .rounded-2xl {
+    border: 1px solid #d6dae0 !important;
+    border-radius: 4px !important;
+  }
+
+  /* 3. Never break a panel across pages. */
+  section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    margin-bottom: 10mm;
+  }
+
+  table {
+    break-inside: auto;
+  }
+
+  tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* 4. Surface links as text (URLs are not useful on a printed IPS). */
+  a {
+    color: #111418 !important;
+    text-decoration: none !important;
+  }
+
+  /* 5. Keep the accent legible in monochrome. */
+  .text-emerald-400,
+  .text-emerald-500 {
+    color: #047857 !important;
+  }
+  .text-orange-400,
+  .text-rose-500 {
+    color: #b91c1c !important;
+  }
+  .text-amber-300 {
+    color: #b45309 !important;
+  }
+  .text-cyan-400 {
+    color: #0e7490 !important;
+  }
+}

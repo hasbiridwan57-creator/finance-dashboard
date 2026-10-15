@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { updateHolding, deleteHolding, sellHolding } from '@/app/actions'
 import { useRouter } from 'next/navigation'
 import { formatIDR, formatCompact, formatPct } from '@/lib/format'
+import { calculateDivestmentNet } from '@/lib/finance/aggregate'
 
 const ASSET_CLASSES: { value: string; label: string }[] = [
   { value: 'stock', label: 'Saham' },
@@ -343,10 +344,7 @@ function SellRow({
 
   const qty = Number(sellQuantity) || 0
   const price = Number(sellPrice) || 0
-  const proceeds = qty * price
-  const costBasis = qty * holding.avg_buy_price
-  const realizedPL = proceeds - costBasis
-  const plPct = costBasis > 0 ? (realizedPL / costBasis) * 100 : 0
+  const calc = calculateDivestmentNet(holding.asset_class, qty, price, holding.avg_buy_price)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -425,22 +423,28 @@ function SellRow({
             </div>
           </div>
 
-          {/* Real-time preview */}
-          <div className="flex flex-wrap gap-x-8 gap-y-2 rounded-lg border border-white/[.06] bg-white/[.02] px-3.5 py-3 text-[12px]">
+          {/* Real-time preview (Indonesian Tax & Fee Net) */}
+          <div className="flex flex-wrap gap-x-6 gap-y-2 rounded-lg border border-white/[.06] bg-white/[.02] px-3.5 py-3 text-[12px]">
             <span className="text-[#9aa0ac]">
-              Estimasi Dana Masuk:{' '}
+              Estimasi Pajak & Fee ({calc.feeRatePct.toFixed(2)}%):{' '}
               <span className="font-medium tabular-nums text-white">
-                {formatIDR(proceeds, { compact: true })}
+                {formatIDR(calc.feeAndTax, { compact: true })}
               </span>
             </span>
             <span className="text-[#9aa0ac]">
-              Estimasi Realized P/L:{' '}
+              Dana Bersih Masuk (Net Proceeds):{' '}
+              <span className="font-medium tabular-nums text-white">
+                {formatIDR(calc.netProceeds, { compact: true })}
+              </span>
+            </span>
+            <span className="text-[#9aa0ac]">
+              Net Realized P/L:{' '}
               <span
                 className={`font-medium tabular-nums ${
-                  realizedPL >= 0 ? 'text-emerald-400' : 'text-orange-400'
+                  calc.netRealizedPL >= 0 ? 'text-emerald-400' : 'text-orange-400'
                 }`}
               >
-                {formatIDR(realizedPL, { compact: true })} ({formatPct(plPct)})
+                {formatIDR(calc.netRealizedPL, { compact: true })} ({formatPct(calc.netPLPct)})
               </span>
             </span>
           </div>

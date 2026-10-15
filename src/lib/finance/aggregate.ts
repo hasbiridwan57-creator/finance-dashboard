@@ -360,3 +360,178 @@ export function topUpAllocation(
     return { ...d, topUpBuy }
   })
 }
+
+// ============================================================================
+// SPRINT 3 MASTERPIECE QUANTITATIVE ADDITIONS
+// ============================================================================
+
+export function calculateDivestmentNet(
+  assetClass: string,
+  sellQuantity: number,
+  sellPrice: number,
+  avgBuyPrice: number
+) {
+  const grossProceeds = sellQuantity * sellPrice
+  const costBasis = sellQuantity * avgBuyPrice
+  const grossPL = grossProceeds - costBasis
+
+  let rate = 0
+  let feeLabel = 'Bebas Biaya Jual (0%)'
+
+  if (assetClass === 'stock') {
+    rate = 0.0025 // 0.15% broker fee + 0.10% PPh Final
+    feeLabel = 'Broker Fee 0.15% + PPh Final BEI 0.10% (0.25%)'
+  } else if (assetClass === 'crypto') {
+    rate = 0.0022 // 0.22% tax & exchange fee
+    feeLabel = 'Pajak & Fee Exchange Kripto (0.22%)'
+  } else if (assetClass === 'gold') {
+    rate = 0.0025 // 0.25% buyback fee / PPh 22
+    feeLabel = 'Estimasi PPh 22 / Biaya Buyback (0.25%)'
+  }
+
+  const feeAndTax = Math.round(grossProceeds * rate)
+  const netProceeds = Math.max(0, Math.round(grossProceeds - feeAndTax))
+  const netRealizedPL = Math.round(netProceeds - costBasis)
+  const netPLPct = costBasis > 0 ? (netRealizedPL / costBasis) * 100 : 0
+
+  return {
+    grossProceeds,
+    costBasis,
+    grossPL,
+    feeAndTax,
+    feeRatePct: rate * 100,
+    feeLabel,
+    netProceeds,
+    netRealizedPL,
+    netPLPct,
+  }
+}
+
+export function benchmarkAndAlphaMetrics(
+  holdings: Holding[],
+  ihsgReturnPct: number = 6.8,
+  riskFreeRatePct: number = 6.25
+) {
+  const summary = portfolioSummary(holdings)
+  const portfolioReturnPct = summary.plPct
+  const alphaVsIhsgPct = portfolioReturnPct - ihsgReturnPct
+  const excessVsRiskFreePct = portfolioReturnPct - riskFreeRatePct
+
+  const assetVolatilities: Record<string, number> = {
+    crypto: 65,
+    stock: 22,
+    gold: 12,
+    mutual_fund: 8,
+    bond: 4,
+  }
+
+  let estimatedVolatilityPct = 0
+  if (summary.value > 0) {
+    for (const b of summary.byClass) {
+      const weight = b.total / summary.value
+      const vol = assetVolatilities[b.assetClass] ?? 15
+      estimatedVolatilityPct += weight * vol
+    }
+  }
+
+  const sharpeRatio =
+    estimatedVolatilityPct > 0
+      ? (portfolioReturnPct - riskFreeRatePct) / estimatedVolatilityPct
+      : 0
+
+  const status = alphaVsIhsgPct >= 0 ? ('OUTPERFORM' as const) : ('UNDERPERFORM' as const)
+
+  return {
+    portfolioReturnPct,
+    ihsgReturnPct,
+    riskFreeRatePct,
+    alphaVsIhsgPct,
+    excessVsRiskFreePct,
+    estimatedVolatilityPct,
+    sharpeRatio,
+    status,
+  }
+}
+
+export interface TradeEntry {
+  id?: string
+  timestamp: string
+  symbol: string
+  side: 'BUY' | 'SELL' | 'LONG' | 'SHORT'
+  entryPrice: number
+  exitPrice: number
+  quantity: number
+  pnl: number
+  strategy?: string
+}
+
+export function tradingJournalMetrics(trades: TradeEntry[]) {
+  if (!trades || trades.length === 0) {
+    return {
+      totalTrades: 0,
+      winCount: 0,
+      lossCount: 0,
+      winRatePct: 0,
+      grossProfit: 0,
+      grossLoss: 0,
+      netPnL: 0,
+      profitFactor: 0,
+      expectancy: 0,
+      maxDrawdown: 0,
+    }
+  }
+
+  let winCount = 0
+  let lossCount = 0
+  let grossProfit = 0
+  let grossLoss = 0
+
+  for (const t of trades) {
+    if (t.pnl > 0) {
+      winCount++
+      grossProfit += t.pnl
+    } else if (t.pnl < 0) {
+      lossCount++
+      grossLoss += Math.abs(t.pnl)
+    }
+  }
+
+  const totalTrades = trades.length
+  const winRatePct = (winCount / totalTrades) * 100
+  const netPnL = grossProfit - grossLoss
+  const profitFactor =
+    grossLoss > 0
+      ? grossProfit / grossLoss
+      : grossProfit > 0
+        ? 99.9
+        : 0
+  const expectancy = netPnL / totalTrades
+
+  let peak = 0
+  let cumPnL = 0
+  let maxDrawdown = 0
+
+  for (const t of trades) {
+    cumPnL += t.pnl
+    if (cumPnL > peak) {
+      peak = cumPnL
+    }
+    const dd = peak - cumPnL
+    if (dd > maxDrawdown) {
+      maxDrawdown = dd
+    }
+  }
+
+  return {
+    totalTrades,
+    winCount,
+    lossCount,
+    winRatePct,
+    grossProfit,
+    grossLoss,
+    netPnL,
+    profitFactor,
+    expectancy,
+    maxDrawdown,
+  }
+}

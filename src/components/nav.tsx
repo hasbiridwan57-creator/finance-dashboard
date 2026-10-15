@@ -10,6 +10,7 @@ const NAV = [
   { label: 'Portofolio', id: 'portofolio' },
   { label: 'Anggaran', id: 'anggaran' },
   { label: 'Transaksi', id: 'transaksi' },
+  { label: 'Trading Journal', id: 'trading-journal' },
 ] as const
 
 export function SidebarNav() {

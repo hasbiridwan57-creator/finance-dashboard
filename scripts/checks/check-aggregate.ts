@@ -12,6 +12,10 @@ import {
   passiveIncomeMetrics,
   stressTestPortfolio,
   topUpAllocation,
+  calculateDivestmentNet,
+  benchmarkAndAlphaMetrics,
+  tradingJournalMetrics,
+  type TradeEntry,
   type Tx,
   type Holding,
   type Account,
@@ -226,6 +230,64 @@ assert.ok(Math.abs(goldStress.stressedPortfolio - 16_500_000) < 0.01, 'stressed 
 assert.equal(goldStress.portfolioLoss, 0, 'portfolioLoss remains 0 on safe haven net gain')
 assert.ok(Math.abs(goldStress.stressedAssets - 21_500_000) < 0.01, 'stressedAssets gains +1.5M via positive portfolioDelta')
 assert.ok(Math.abs(goldStress.stressedNetWorth - (21_500_000 - 5_000_000)) < 0.01, 'stressedNetWorth accurately reflects safe haven gain')
+
+// ============================================================================
+// SPRINT 3 MASTERPIECE TESTS
+// ============================================================================
+
+// 1. calculateDivestmentNet (Indonesian stock: 0.15% fee + 0.10% PPh Final = 0.25%)
+const divest = calculateDivestmentNet('stock', 1_000, 10_000, 9_000)
+assert.equal(divest.grossProceeds, 10_000_000, 'exact gross proceeds')
+assert.equal(divest.costBasis, 9_000_000, 'exact cost basis')
+assert.equal(divest.feeAndTax, 25_000, 'exact fee and tax (0.25% of 10M = 25k)')
+assert.equal(divest.netProceeds, 9_975_000, 'exact net proceeds (10M - 25k)')
+assert.equal(divest.netRealizedPL, 975_000, 'exact net realized P/L (9.975M - 9M)')
+assert.ok(Math.abs(divest.netPLPct - (975_000 / 9_000_000) * 100) < 0.001)
+
+// Crypto divestment (0.22% tax/fee)
+const cryptoDivest = calculateDivestmentNet('crypto', 1, 100_000_000, 90_000_000)
+assert.equal(cryptoDivest.feeAndTax, 220_000, '0.22% crypto fee/tax')
+assert.equal(cryptoDivest.netProceeds, 99_780_000)
+
+// 2. benchmarkAndAlphaMetrics with realistic holdings
+const bench = benchmarkAndAlphaMetrics(holdings, 6.8, 6.25)
+assert.ok(!isNaN(bench.alphaVsIhsgPct), 'alpha is not NaN')
+assert.ok(!isNaN(bench.sharpeRatio), 'sharpe ratio is not NaN')
+assert.ok(bench.estimatedVolatilityPct > 0, 'volatility is positive')
+assert.ok(bench.status === 'OUTPERFORM' || bench.status === 'UNDERPERFORM')
+
+// Empty benchmark safety
+const emptyBench = benchmarkAndAlphaMetrics([], 6.8, 6.25)
+assert.equal(emptyBench.portfolioReturnPct, 0)
+assert.equal(emptyBench.estimatedVolatilityPct, 0)
+assert.equal(emptyBench.sharpeRatio, 0, 'sharpe ratio is 0 on empty portfolio without NaN')
+assert.equal(emptyBench.status, 'UNDERPERFORM')
+
+// 3. tradingJournalMetrics with 3 sample trades (2 wins, 1 loss)
+const sampleTrades: TradeEntry[] = [
+  { timestamp: '2026-10-01', symbol: 'BBCA.JK', side: 'BUY', entryPrice: 9000, exitPrice: 10000, quantity: 100, pnl: 100_000 },
+  { timestamp: '2026-10-02', symbol: 'BTC', side: 'BUY', entryPrice: 1_000_000_000, exitPrice: 1_050_000_000, quantity: 0.01, pnl: 500_000 },
+  { timestamp: '2026-10-03', symbol: 'TLKM.JK', side: 'SELL', entryPrice: 3200, exitPrice: 3000, quantity: 500, pnl: -100_000 },
+]
+const journal = tradingJournalMetrics(sampleTrades)
+assert.equal(journal.totalTrades, 3)
+assert.equal(journal.winCount, 2)
+assert.equal(journal.lossCount, 1)
+assert.ok(Math.abs(journal.winRatePct - (2 / 3) * 100) < 0.001)
+assert.equal(journal.grossProfit, 600_000)
+assert.equal(journal.grossLoss, 100_000)
+assert.equal(journal.netPnL, 500_000)
+assert.equal(journal.profitFactor, 6, 'profit factor 600k / 100k = 6')
+assert.ok(Math.abs(journal.expectancy - 500_000 / 3) < 0.001)
+assert.equal(journal.maxDrawdown, 100_000, 'peak was 600k, dropped to 500k -> dd 100k')
+
+// Empty trading journal safety
+const emptyJournal = tradingJournalMetrics([])
+assert.equal(emptyJournal.totalTrades, 0)
+assert.equal(emptyJournal.winRatePct, 0)
+assert.equal(emptyJournal.profitFactor, 0)
+assert.equal(emptyJournal.expectancy, 0)
+assert.equal(emptyJournal.maxDrawdown, 0)
 
 console.log('scripts/checks/check-aggregate.ts: all quantitative checks passed!')
 

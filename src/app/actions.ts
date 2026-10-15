@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { calculateDivestmentNet } from '@/lib/finance/aggregate'
 
 export async function addTransaction(input: {
   amount: number
@@ -301,9 +302,14 @@ export async function sellHolding(input: {
     return { error: 'Jumlah unit yang dijual melebihi kepemilikan.' }
   }
 
-  const proceeds = input.sellQuantity * input.sellPrice
-  const costBasisSold = input.sellQuantity * Number(existing.avg_buy_price)
-  const realizedPL = proceeds - costBasisSold
+  const calc = calculateDivestmentNet(
+    existing.asset_class,
+    input.sellQuantity,
+    input.sellPrice,
+    Number(existing.avg_buy_price)
+  )
+  const proceeds = calc.netProceeds
+  const realizedPL = calc.netRealizedPL
 
   // Update or Delete holding
   if (input.sellQuantity >= currentQty) {
@@ -351,7 +357,8 @@ export async function sellHolding(input: {
           .maybeSingle()
 
         const isGain = realizedPL > 0
-        const formattedProceeds = Math.round(proceeds).toLocaleString('id-ID')
+        const formattedProceeds = Math.round(calc.netProceeds).toLocaleString('id-ID')
+        const formattedFee = calc.feeAndTax.toLocaleString('id-ID')
         const descPrefix = isGain ? 'Realized Gain Jual' : 'Realized Loss Jual'
 
         await supabase.from('transactions').insert({
@@ -359,7 +366,7 @@ export async function sellHolding(input: {
           amount: absPL,
           type: isGain ? 'income' : 'expense',
           category_id: cat?.id ?? null,
-          description: `${descPrefix} ${input.sellQuantity} ${existing.symbol} (Proceeds: Rp ${formattedProceeds})`,
+          description: `${descPrefix} ${input.sellQuantity} ${existing.symbol} (Net Proceeds: Rp ${formattedProceeds}, Fee/Tax: Rp ${formattedFee})`,
           date: new Date().toISOString().slice(0, 10),
           account: input.targetAccount,
           source: 'manual',

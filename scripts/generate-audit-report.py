@@ -26,6 +26,9 @@ FILES = [
     "src/components/charts.tsx",
     "src/app/page.tsx",
     "src/app/auth/page.tsx",
+    "src/components/smt-journal-panel.tsx",
+    "src/components/export-report-button.tsx",
+    "src/app/api/smt/route.ts",
     "scripts/checks/check-aggregate.ts",
 ]
 
@@ -50,7 +53,7 @@ A = L.append
 A("# AUDIT REPORT — Wealth & Risk Terminal")
 A("")
 A("Repo: `/Users/hasbi/finance-dashboard`  ")
-A("Sprint: *Wealth & Portfolio Risk Management Terminal* (Sprint 1 + Sprint 2 + Final Fix) — self-audit  ")
+A("Sprint: *Wealth & Portfolio Risk Management Terminal* (Sprint 1 + Sprint 2 + Final Polish + Sprint 3 Masterpiece) — self-audit  ")
 A("Generator: `scripts/generate-audit-report.py` (output terminal ditangkap langsung, source dibaca langsung dari disk)")
 A("")
 A("---")
@@ -127,6 +130,10 @@ A("| 29 | Penutupan celah silent-failure kategori passive income (`actions.ts`, 
 A("| 30 | Kalkulasi hedging / safe-haven di `stressTestPortfolio` (`aggregate.ts`) | ✅ PASS (FINAL POLISH 2) | Memakai `portfolioDelta = stressedPortfolio - basePortfolio` sehingga `stressedAssets = Math.max(0, worth.assets + portfolioDelta)`. Kenaikan aset safe-haven (mis. emas +5% di Crypto Winter) kini ikut terhitung, bukan diabaikan. |")
 A("| 31 | Integrasi harga emas live ke endpoint `/api/prices` (`route.ts`) | ✅ PASS (FINAL POLISH 2) | Import `fetchGoldPerGram` + `GOLD_SYMBOLS` (12 alias). Fitur \"Beli via Nominal (Rp)\" kini mengenali simbol emas sebelum jatuh ke jalur saham `.JK` / Binance. |")
 A("| 32 | Sinkronisasi state dropdown akun (`auth-actions.tsx`, `accounts-panel.tsx`) | ✅ PASS (FINAL POLISH 2) | `handleSubmit` memvalidasi `validAccount` terhadap `accountNames` terkini; `<select>` memakai nilai ternormalisasi; `handleDelete` mereset `fromAcc`/`toAcc` bila akun yang dipilih terhapus — mencegah state stale. |")
+A("| 33 | Indonesian Tax & Broker Fee Engine + Trading Metrics (`aggregate.ts`) | ✅ PASS (SPRINT 3) | `calculateDivestmentNet` (BEI 0.25% = 0.15% broker + 0.10% PPh Final; kripto 0.22%; emas 0.25% buyback; lainnya 0%), `benchmarkAndAlphaMetrics` (alpha vs IHSG, excess vs risk-free, volatilitas tertimbang, Sharpe), dan `tradingJournalMetrics` (win rate, profit factor, expectancy, max drawdown). Semua diguard terhadap pembagian nol. |")
+A("| 34 | Integrasi pajak & fee ke eksekusi jual + preview UI (`actions.ts`, `holdings-table.tsx`) | ✅ PASS (SPRINT 3) | `sellHolding` memakai `calc.netProceeds` / `calc.netRealizedPL` untuk kas masuk & pencatatan gain/loss, dengan deskripsi memuat Net Proceeds dan Fee/Tax. `SellRow` menampilkan 3 baris transparan: estimasi pajak & fee, dana bersih masuk, dan net realized P/L. |")
+A("| 35 | Smart Money Trading Journal (`api/smt/route.ts`, `smt-journal-panel.tsx`, `data.ts`) | ✅ PASS (SPRINT 3) | Endpoint mengembalikan dataset deterministik 8 eksekusi (IDX + kripto) saat ledger lokal tidak ada, sehingga panel tetap hidup di Vercel serverless (tidak lagi 404). Panel menampilkan 4 kartu kuantitatif + tabel eksekusi terakhir. |")
+A("| 36 | Live IHSG benchmark, Export IPS PDF, & print stylesheet (`prices.ts`, `rebalance-stress-panel.tsx`, `export-report-button.tsx`, `globals.css`, `page.tsx`, `nav.tsx`) | ✅ PASS (SPRINT 3) | `fetchIhsgReturnYtd()` menarik `^JKSE` range YTD (fallback 6.8%); sub-panel Alpha/Sharpe baru muncul di panel rebalancing; tombol Export IPS memicu `window.print()` dengan `@media print` yang menyembunyikan chrome, memaksa palet terang berkontras, dan mencegah panel terpotong antar-halaman. |")
 A("")
 A("### Catatan temuan (jujur)")
 A("- **Instruksi menyebut tabel 8 kolom; riil 9 kolom.** Setelah kolom *Bobot* disisipkan, header menjadi 9 `<th>`. `colSpan` diset **9** — mengikuti struktur riil, bukan angka di instruksi. Kalau dipaksa 8, baris Edit/Sell akan menyisakan celah 1 kolom.")

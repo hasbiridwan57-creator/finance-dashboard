@@ -1,4 +1,4 @@
-import { getDashboardData, type ActivityEvent } from '@/lib/finance/data'
+import { getDashboardData, getSmtTrades, type ActivityEvent } from '@/lib/finance/data'
 import {
   monthlyCashflow,
   expenseByCategory,
@@ -14,10 +14,13 @@ import { AccountsPanel } from '@/components/accounts-panel'
 import { RebalanceStressPanel } from '@/components/rebalance-stress-panel'
 import { CashflowChart, CategoryChart, PortfolioChart, Sparkline } from '@/components/charts'
 import { HoldingsTable } from '@/components/holdings-table'
+import { SmtJournalPanel } from '@/components/smt-journal-panel'
+import { ExportReportButton } from '@/components/export-report-button'
 import { SidebarNav, PeriodToggle } from '@/components/nav'
 import { AddTransactionButton, AddAssetButton, ImportPortfolioButton, SignOutButton } from '@/components/auth-actions'
 import { LiveRefresher } from '@/components/live-refresher'
 import { formatIDR, formatCompact, formatMonth, formatPct, formatDay } from '@/lib/format'
+import { fetchIhsgReturnYtd } from '@/lib/finance/prices'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,6 +33,7 @@ export default async function DashboardPage({
   const MONTHS = Math.min(12, Math.max(3, Number(sp.months) || 6)) as 3 | 6 | 12
 
   const { transactions, holdings, accounts, demo, user, activity } = await getDashboardData()
+  const [smtTrades, ihsgReturnPct] = await Promise.all([getSmtTrades(), fetchIhsgReturnYtd()])
 
   const flow = monthlyCashflow(transactions)
   const categories = expenseByCategory(transactions)
@@ -124,6 +128,7 @@ export default async function DashboardPage({
                   <AddTransactionButton accounts={accounts} />
                 </>
               ) : null}
+              <ExportReportButton />
               {user ? (
                 <a
                   href="/auth"
@@ -325,6 +330,7 @@ export default async function DashboardPage({
                 byClass={portfolio.byClass}
                 totalValue={portfolio.value}
                 worth={worth}
+                ihsgReturnPct={ihsgReturnPct}
               />
             </Panel>
           </section>
@@ -347,6 +353,16 @@ export default async function DashboardPage({
           <section id="transaksi" className="animate-rise stagger-4 mt-4 scroll-mt-6">
             <Panel title="Aktivitas Terbaru" hint="Transaksi, saldo, dan investasi terbaru">
               <RecentActivity activity={activity} />
+            </Panel>
+          </section>
+
+          {/* Row: smart money & quantitative trading journal */}
+          <section id="trading-journal" className="animate-rise stagger-5 mt-4 scroll-mt-6">
+            <Panel
+              title="Smart Money & Quantitative Trading Journal"
+              hint="Evaluasi Win Rate, Profit Factor, Expectancy, dan eksekusi strategi pasar"
+            >
+              <SmtJournalPanel trades={smtTrades} />
             </Panel>
           </section>
 

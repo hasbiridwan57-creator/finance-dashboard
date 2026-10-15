@@ -262,3 +262,27 @@ export async function applyLivePrices(
       : { ...h, live: false }
   })
 }
+
+// ---------------------------------------------------------------------------
+// IHSG year-to-date return — the benchmark leg of the Alpha / Sharpe metrics.
+// Source: Yahoo Finance ^JKSE. Falls back to a realistic 6.8% when the feed is
+// unreachable (network restrictions, serverless egress, holiday closures).
+// ---------------------------------------------------------------------------
+export async function fetchIhsgReturnYtd(): Promise<number> {
+  try {
+    const res = await fetch(
+      'https://query1.finance.yahoo.com/v8/finance/chart/%5EJKSE?interval=1d&range=ytd',
+      { headers: { 'User-Agent': UA }, next: { revalidate: 3600 } } as RequestInit,
+    )
+    if (!res.ok) return 6.8
+    const json = await res.json()
+    const result = json?.chart?.result?.[0]
+    const closes: number[] = result?.indicators?.quote?.[0]?.close ?? []
+    const first = closes.find((c) => typeof c === 'number' && c > 0)
+    const last = result?.meta?.regularMarketPrice ?? [...closes].reverse().find((c) => typeof c === 'number' && c > 0)
+    if (!first || !last) return 6.8
+    return ((last - first) / first) * 100
+  } catch {
+    return 6.8
+  }
+}
