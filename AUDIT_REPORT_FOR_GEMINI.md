@@ -135,18 +135,18 @@ Exit code: **0**
 
 ▲ Next.js 16.3.6 (Turbopack)
 - Environments: .env.local
-✓ Running next.config.ts took 60ms
+✓ Running next.config.ts took 72ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 767ms
+✓ Compiled successfully in 480ms
   Running TypeScript ...
-  Finished TypeScript in 859ms ...
+  Finished TypeScript in 884ms ...
   Collecting page data using 7 workers ...
   Generating static pages using 7 workers (0/7) ...
   Generating static pages using 7 workers (1/7) 
   Generating static pages using 7 workers (3/7) 
   Generating static pages using 7 workers (5/7) 
-✓ Generating static pages using 7 workers (7/7) in 117ms
+✓ Generating static pages using 7 workers (7/7) in 116ms
   Finalizing page optimization ...
 
 Route (app)
@@ -4276,7 +4276,7 @@ export function RebalanceStressPanel({
 
 ### C.11 `src/components/smt-journal-panel.tsx`
 
-_413 baris · 16,606 karakter_
+_429 baris · 17,328 karakter_
 
 ```tsx
 'use client'
@@ -4290,8 +4290,26 @@ import {
 import { addTradeEntry, updateTradeEntry, deleteTradeEntry } from '@/app/actions'
 import { useRouter } from 'next/navigation'
 
-export function SmtJournalPanel({ trades }: { trades: TradeEntry[] }) {
+export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[] }) {
   const router = useRouter()
+  const [trades, setTrades] = useState<TradeEntry[]>(() => {
+    try {
+      const local = localStorage.getItem('smt_journal_trades')
+      if (local !== null) {
+        const parsed = JSON.parse(local)
+        if (Array.isArray(parsed)) return parsed
+      }
+    } catch {}
+    return initialTrades
+  })
+
+  function persistTrades(newTrades: TradeEntry[]) {
+    setTrades(newTrades)
+    try {
+      localStorage.setItem('smt_journal_trades', JSON.stringify(newTrades))
+    } catch {}
+  }
+
   const metrics = tradingJournalMetrics(trades)
   const recentTrades = [...trades].slice(-15).reverse()
 
@@ -4353,19 +4371,15 @@ export function SmtJournalPanel({ trades }: { trades: TradeEntry[] }) {
 
     try {
       if (editingTrade && editingTrade.id) {
-        const res = await updateTradeEntry({ id: editingTrade.id, ...payload })
-        if (res.error) {
-          setError(res.error)
-          setLoading(false)
-          return
-        }
+        const updatedList = trades.map(t => t.id === editingTrade.id ? { ...t, ...payload } : t)
+        persistTrades(updatedList)
+        await updateTradeEntry({ id: editingTrade.id, ...payload })
       } else {
-        const res = await addTradeEntry(payload)
-        if (res.error) {
-          setError(res.error)
-          setLoading(false)
-          return
-        }
+        const newId = `smt-${String(trades.length + 1).padStart(3, '0')}`
+        const newTrade: TradeEntry = { id: newId, ...payload }
+        const newList = [newTrade, ...trades]
+        persistTrades(newList)
+        await addTradeEntry(payload)
       }
       setIsOpen(false)
       router.refresh()
@@ -4379,6 +4393,8 @@ export function SmtJournalPanel({ trades }: { trades: TradeEntry[] }) {
   async function handleDelete(id: string) {
     if (!confirm('Hapus catatan trade ini dari jurnal?')) return
     try {
+      const filtered = trades.filter(t => t.id !== id)
+      persistTrades(filtered)
       await deleteTradeEntry(id)
       router.refresh()
     } catch (err) {
@@ -4392,10 +4408,10 @@ export function SmtJournalPanel({ trades }: { trades: TradeEntry[] }) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-semibold uppercase tracking-wider text-white">
-            Smart Money & Quantitative Execution Log
+            Smart Money & Quantitative Execution Log (Sandbox Mode)
           </h3>
           <p className="text-xs text-[#9aa0ac]">
-            Pencatatan real-time, statistik win rate, profit factor, dan manajemen eksekusi order.
+            Data dummy interaktif untuk uji coba live. Anda dapat menambah, mengedit, dan menghapus catatan trade.
           </p>
         </div>
         <button
@@ -6656,4 +6672,4 @@ console.log('=== ALL 16 ENGINE FUNCTIONS VERIFIED WITH MATHEMATICAL PROOF ===')
 
 ---
 
-**Total baris 19 file: 6,296.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
+**Total baris 19 file: 6,312.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
