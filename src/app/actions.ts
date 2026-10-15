@@ -51,12 +51,17 @@ export async function addTransaction(input: {
     .eq('name', input.category)
     .maybeSingle()
 
+  let finalDescription = input.description || input.category
+  if (!cat?.id && input.category && !finalDescription.toLowerCase().includes(input.category.toLowerCase())) {
+    finalDescription = '[' + input.category + '] ' + finalDescription
+  }
+
   const { error } = await supabase.from('transactions').insert({
     user_id: user.id,
     amount: input.amount,
     type: input.type,
     category_id: cat?.id ?? null,
-    description: input.description,
+    description: finalDescription,
     date: input.date,
     account: input.account,
     source: 'manual',

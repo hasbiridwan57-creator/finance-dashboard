@@ -6,6 +6,7 @@ export interface Tx {
   type: 'income' | 'expense'
   category: string
   date: string
+  description?: string
 }
 
 export interface Holding {
@@ -253,7 +254,11 @@ export function passiveIncomeMetrics(txs: Tx[], burnRate: number) {
   const passiveTxs = txs.filter((t) => {
     if (t.type !== 'income') return false
     const cat = t.category || ''
-    const isMatch = PASSIVE_CATEGORIES.has(cat) || /dividen|kupon|bunga|yield/i.test(cat)
+    const desc = t.description || ''
+    const isMatch =
+      PASSIVE_CATEGORIES.has(cat) ||
+      /dividen|kupon|bunga|yield|passive/i.test(cat) ||
+      /dividen|kupon|bunga|yield|passive/i.test(desc)
     if (isMatch) {
       totalPassiveIncome += t.amount
     }
@@ -307,7 +312,8 @@ export function stressTestPortfolio(
 
   const portfolioLoss = Math.max(0, basePortfolio - stressedPortfolio)
   const portfolioDropPct = basePortfolio > 0 ? (portfolioLoss / basePortfolio) * 100 : 0
-  const stressedAssets = Math.max(0, worth.assets - portfolioLoss)
+  const portfolioDelta = stressedPortfolio - basePortfolio
+  const stressedAssets = Math.max(0, worth.assets + portfolioDelta)
   const stressedNetWorth = stressedAssets - worth.debts
   const stressedDarPct = stressedAssets > 0 ? (worth.debts / stressedAssets) * 100 : 0
 

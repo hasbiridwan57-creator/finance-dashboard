@@ -38,15 +38,15 @@ Exit code: **0**
 ✓ Running next.config.ts took 61ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 472ms
+✓ Compiled successfully in 660ms
   Running TypeScript ...
-  Finished TypeScript in 1038ms ...
+  Finished TypeScript in 876ms ...
   Collecting page data using 7 workers ...
   Generating static pages using 7 workers (0/7) ...
   Generating static pages using 7 workers (1/7) 
   Generating static pages using 7 workers (3/7) 
   Generating static pages using 7 workers (5/7) 
-✓ Generating static pages using 7 workers (7/7) in 121ms
+✓ Generating static pages using 7 workers (7/7) in 119ms
   Finalizing page optimization ...
 
 Route (app)
@@ -115,6 +115,10 @@ Exit code: **0**
 | 26 | Auto-bootstrap akun default saat transaksi pertama (`actions.ts`, `auth-actions.tsx`) | ✅ PASS (POLISH) | Mencegah error 'Akun tidak ditemukan' pada user pendaftar baru yang tabel akunnya masih kosong di Supabase dengan auto-insert akun default ('BCA') saat simpan transaksi pertama. |
 | 27 | Rebranding konsisten 'Wealth & Risk Terminal' (`auth/page.tsx`, `layout.tsx`) | ✅ PASS (POLISH) | Menyeragamkan judul dan identitas aplikasi di halaman login, metadata title, dan sidebar/header. |
 | 28 | Penempatan prioritas portofolio nomor 1 & migrasi Vercel (`portfolio-site`) | ✅ PASS (POLISH) | Memindahkan project Wealth & Portfolio Risk Management Terminal ke index 0 (paling atas) di array portofolio dan men-deploy ke Vercel production (`portfolio-site-xi-swart-28.vercel.app`). |
+| 29 | Penutupan celah silent-failure kategori passive income (`actions.ts`, `data.ts`, `aggregate.ts`) | ✅ PASS (FINAL POLISH 2) | `addTransaction` menyematkan tag `[Kategori]` ke deskripsi bila kategori tidak ada di tabel `categories`; `data.ts` mengambil kolom `description` dan memulihkan kategori dari regex `/dividen|kupon/i` & `/bunga|yield/i`; `passiveIncomeMetrics` memfilter via kategori MAUPUN deskripsi. |
+| 30 | Kalkulasi hedging / safe-haven di `stressTestPortfolio` (`aggregate.ts`) | ✅ PASS (FINAL POLISH 2) | Memakai `portfolioDelta = stressedPortfolio - basePortfolio` sehingga `stressedAssets = Math.max(0, worth.assets + portfolioDelta)`. Kenaikan aset safe-haven (mis. emas +5% di Crypto Winter) kini ikut terhitung, bukan diabaikan. |
+| 31 | Integrasi harga emas live ke endpoint `/api/prices` (`route.ts`) | ✅ PASS (FINAL POLISH 2) | Import `fetchGoldPerGram` + `GOLD_SYMBOLS` (12 alias). Fitur "Beli via Nominal (Rp)" kini mengenali simbol emas sebelum jatuh ke jalur saham `.JK` / Binance. |
+| 32 | Sinkronisasi state dropdown akun (`auth-actions.tsx`, `accounts-panel.tsx`) | ✅ PASS (FINAL POLISH 2) | `handleSubmit` memvalidasi `validAccount` terhadap `accountNames` terkini; `<select>` memakai nilai ternormalisasi; `handleDelete` mereset `fromAcc`/`toAcc` bila akun yang dipilih terhapus — mencegah state stale. |
 
 ### Catatan temuan (jujur)
 - **Instruksi menyebut tabel 8 kolom; riil 9 kolom.** Setelah kolom *Bobot* disisipkan, header menjadi 9 `<th>`. `colSpan` diset **9** — mengikuti struktur riil, bukan angka di instruksi. Kalau dipaksa 8, baris Edit/Sell akan menyisakan celah 1 kolom.
@@ -123,11 +127,11 @@ Exit code: **0**
 
 ---
 
-## BAGIAN C — Source Code Lengkap (12 file)
+## BAGIAN C — Source Code Lengkap (14 file)
 
 ### C.1 `src/lib/finance/aggregate.ts`
 
-_356 baris · 10,752 karakter_
+_362 baris · 10,949 karakter_
 
 ```typescript
 // Pure aggregation: turn raw rows into the four dashboard answers.
@@ -138,6 +142,7 @@ export interface Tx {
   type: 'income' | 'expense'
   category: string
   date: string
+  description?: string
 }
 
 export interface Holding {
@@ -385,7 +390,11 @@ export function passiveIncomeMetrics(txs: Tx[], burnRate: number) {
   const passiveTxs = txs.filter((t) => {
     if (t.type !== 'income') return false
     const cat = t.category || ''
-    const isMatch = PASSIVE_CATEGORIES.has(cat) || /dividen|kupon|bunga|yield/i.test(cat)
+    const desc = t.description || ''
+    const isMatch =
+      PASSIVE_CATEGORIES.has(cat) ||
+      /dividen|kupon|bunga|yield|passive/i.test(cat) ||
+      /dividen|kupon|bunga|yield|passive/i.test(desc)
     if (isMatch) {
       totalPassiveIncome += t.amount
     }
@@ -439,7 +448,8 @@ export function stressTestPortfolio(
 
   const portfolioLoss = Math.max(0, basePortfolio - stressedPortfolio)
   const portfolioDropPct = basePortfolio > 0 ? (portfolioLoss / basePortfolio) * 100 : 0
-  const stressedAssets = Math.max(0, worth.assets - portfolioLoss)
+  const portfolioDelta = stressedPortfolio - basePortfolio
+  const stressedAssets = Math.max(0, worth.assets + portfolioDelta)
   const stressedNetWorth = stressedAssets - worth.debts
   const stressedDarPct = stressedAssets > 0 ? (worth.debts / stressedAssets) * 100 : 0
 
@@ -488,9 +498,559 @@ export function topUpAllocation(
 }
 ```
 
-### C.2 `src/app/actions.ts`
+### C.2 `src/lib/finance/data.ts`
 
-_690 baris · 20,857 karakter_
+_188 baris · 5,855 karakter_
+
+```typescript
+import { createClient } from '@/lib/supabase/server'
+import { generateTransactions, generateHoldings, generateAccounts } from '@/lib/seed-data'
+import { applyLivePrices } from '@/lib/finance/prices'
+import type { Tx, Holding, Account } from '@/lib/finance/aggregate'
+
+export interface DashboardData {
+  transactions: Tx[]
+  holdings: Holding[]
+  accounts: Account[]
+  /** True when Supabase is not configured and demo data is being served. */
+  demo: boolean
+  /** Authenticated user email, when signed in. */
+  user: string | null
+  /** Unified activity feed: transactions + account/holdings additions, newest first. */
+  activity: ActivityEvent[]
+}
+
+export interface ActivityEvent {
+  date: string
+  kind: 'transaction' | 'account' | 'holding'
+  label: string
+  description: string
+  amount: number | null
+  tone: 'up' | 'down' | 'neutral'
+}
+
+const hasSupabase =
+  !!process.env.NEXT_PUBLIC_SUPABASE_URL && !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+/**
+ * Single read path for the dashboard.
+ * Signed-in user -> own rows (RLS-enforced).
+ * Anonymous -> shared demo dataset (user_id IS NULL).
+ * No Supabase configured -> deterministic demo data.
+ */
+export async function getDashboardData(): Promise<DashboardData> {
+  if (!hasSupabase) return demoData(null)
+
+  const supabase = await createClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  // Jika tidak login, tampilkan dashboard kosong (nol)
+  if (!user) {
+    return {
+      transactions: [],
+      holdings: [],
+      accounts: [],
+      demo: false,
+      user: null,
+      activity: [],
+    }
+  }
+
+  const [txRes, holdRes, accRes] = await Promise.all([
+    supabase
+      .from('transactions')
+      .select('amount, type, date, description, categories(name)')
+      .order('date', { ascending: false }),
+    supabase
+      .from('holdings')
+      .select('id, symbol, name, asset_class, quantity, avg_buy_price, current_price, created_at')
+      .order('symbol', { ascending: true }),
+    supabase
+      .from('accounts')
+      .select('name, kind, balance, institution, created_at')
+      .order('name', { ascending: true }),
+  ])
+
+  // Any read failure falls back rather than rendering an empty dashboard.
+  if (txRes.error || holdRes.error || accRes.error) return demoData(user?.email ?? null)
+
+  const transactions: Tx[] = (txRes.data ?? []).map((r) => {
+    const rawCategory = (Array.isArray(r.categories) ? r.categories[0]?.name : (r.categories as { name: string } | null)?.name) ?? null
+    const desc = typeof r.description === 'string' ? r.description : ''
+    let category = rawCategory
+    if (!category || category === 'Lainnya') {
+      if (/dividen|kupon/i.test(desc)) category = 'Dividen & Kupon'
+      else if (/bunga|yield/i.test(desc)) category = 'Bunga & Yield'
+      else category = rawCategory ?? 'Lainnya'
+    }
+    return {
+      amount: Number(r.amount),
+      type: r.type as Tx['type'],
+      category,
+      date: r.date as string,
+      description: desc,
+    }
+  })
+
+  const holdings: Holding[] = (holdRes.data ?? []).map((h) => ({
+    id: h.id,
+    symbol: h.symbol,
+    name: h.name,
+    asset_class: h.asset_class,
+    quantity: Number(h.quantity),
+    avg_buy_price: Number(h.avg_buy_price),
+    current_price: Number(h.current_price),
+    created_at: h.created_at as string | null,
+  }))
+  const accounts: Account[] = (accRes.data ?? []).map((a) => ({
+    name: a.name,
+    kind: a.kind as Account['kind'],
+    balance: Number(a.balance),
+    institution: a.institution as string | null,
+    created_at: a.created_at as string | null,
+  }))
+
+  // Live market prices for the portfolio (Yahoo for stocks, CoinGecko for crypto).
+  const priced = await applyLivePrices(holdings)
+
+  // Unified activity feed: transactions + new accounts + new holdings.
+  const activity: ActivityEvent[] = [
+    ...transactions.map<ActivityEvent>((t) => ({
+      date: t.date,
+      kind: 'transaction',
+      label: t.category,
+      description: t.description || 'Transaksi',
+      amount: t.amount,
+      tone: t.type === 'income' ? 'up' : 'down',
+    })),
+    ...accounts.map<ActivityEvent>((a) => ({
+      date: a.created_at?.slice(0, 10) ?? '',
+      kind: 'account',
+      label: a.name,
+      description: 'Saldo awal',
+      amount: a.balance,
+      tone: 'neutral',
+    })),
+    ...priced.map<ActivityEvent>((h) => ({
+      // created_at is not selected on holdings; use today as approximation.
+      date: new Date().toISOString().slice(0, 10),
+      kind: 'holding',
+      label: h.symbol,
+      description: 'Investasi ditambah',
+      amount: h.quantity * h.avg_buy_price,
+      tone: 'neutral',
+    })),
+  ].sort((a, b) => b.date.localeCompare(a.date))
+
+  return {
+    transactions,
+    holdings: priced,
+    accounts,
+    demo: false,
+    user: user?.email ?? null,
+    activity,
+  }
+}
+
+function demoData(user: string | null): DashboardData {
+  const transactions = generateTransactions()
+  const holdings = generateHoldings()
+  const accounts = generateAccounts()
+  const activity: ActivityEvent[] = [
+    ...transactions.map((t) => ({
+      date: t.date,
+      kind: 'transaction' as const,
+      label: t.category,
+      description: 'Transaksi',
+      amount: t.amount,
+      tone: (t.type === 'income' ? 'up' : 'down') as 'up' | 'down',
+    })),
+    ...accounts.map((a) => ({
+      date: new Date().toISOString().slice(0, 10),
+      kind: 'account' as const,
+      label: a.name,
+      description: 'Saldo awal',
+      amount: a.balance,
+      tone: 'neutral' as const,
+    })),
+  ].sort((a, b) => b.date.localeCompare(a.date))
+
+  return {
+    transactions,
+    holdings,
+    accounts,
+    demo: true,
+    user,
+    activity,
+  }
+}
+
+// Local view models used by the dashboard components.
+export type DemoAccount = ReturnType<typeof generateAccounts>[number]
+export type DemoHolding = ReturnType<typeof generateHoldings>[number]
+```
+
+### C.3 `src/lib/finance/prices.ts`
+
+_264 baris · 8,415 karakter_
+
+```typescript
+/**
+ * Live price fetcher, all denominated in IDR so PL is computed against avg_buy_price.
+ *   stock       -> Yahoo Finance (.JK / IDX)
+ *   crypto      -> Binance IDR pairs, CoinGecko fallback
+ *   gold        -> COMEX GC=F (USD/oz) x USD/IDR, converted to Rp per gram
+ *   bond        -> retail par value (Rp 1.000.000/unit); no public feed exists
+ *   mutual_fund -> no public NAV API exists in Indonesia; keeps stored NAV
+ */
+
+const UA = 'Mozilla/5.0 (finance-dashboard)'
+
+interface YahooMeta {
+  regularMarketPrice: number | null
+  currency: string | null
+}
+
+async function fetchYahoo(symbols: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (!symbols.length) return out
+  await Promise.all(
+    symbols.map(async (sym) => {
+      try {
+        const res = await fetch(
+          `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
+            sym,
+          )}?interval=1d&range=1d`,
+          { headers: { 'User-Agent': UA }, next: { revalidate: 60 } },
+        )
+        if (!res.ok) return
+        const json = await res.json()
+        const meta = json?.chart?.result?.[0]?.meta as YahooMeta | undefined
+        if (meta?.regularMarketPrice != null) out.set(sym, meta.regularMarketPrice)
+      } catch {
+        // Network/parse failure → keep the stored price.
+      }
+    }),
+  )
+  return out
+}
+
+const COINGECKO_ID: Record<string, string> = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  SOL: 'solana',
+  BNB: 'binancecoin',
+  ADA: 'cardano',
+  DOGE: 'dogecoin',
+  USDT: 'tether',
+  SUI: 'sui',
+}
+
+/** Crypto pairs Binance quotes directly against IDR. */
+const BINANCE_SUPPORTED = new Set([
+  'BTCIDR',
+  'ETHIDR',
+  'BNBIDR',
+  'SOLIDR',
+  'ADAIDR',
+  'DOGEIDR',
+  'AVAXIDR',
+  'LINKIDR',
+  'MATICIDR',
+  'DOTIDR',
+  'LTCIDR',
+  'TRXIDR',
+  'XRPIDR',
+  'SUIIDR',
+])
+
+/**
+ * Fetch crypto IDR prices. Tries CoinGecko first; falls back to Binance
+ * (IDR pairs) when CoinGecko is rate-limiting (403).
+ */
+async function fetchCrypto(symbols: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+
+  // --- Binance: bulk ticker, one request --------------------------------
+  const binSyms = symbols.filter((s) => !s.toUpperCase().endsWith('IDR'))
+  const pairs = binSyms
+    .map((s) => `${s.toUpperCase()}IDR`)
+    .filter((p) => BINANCE_SUPPORTED.has(p))
+  if (pairs.length) {
+    try {
+      const res = await fetch(
+        `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(
+          JSON.stringify(pairs),
+        )}`,
+        { headers: { Accept: 'application/json' }, next: { revalidate: 60 } },
+      )
+      if (res.ok) {
+        const json = (await res.json()) as { symbol: string; price: string }[]
+        for (const t of json) {
+          const sym = t.symbol.replace(/IDR$/, '')
+          const n = Number(t.price)
+          if (n > 0) out.set(sym, n)
+        }
+        if (out.size === binSyms.length) return out // all resolved
+      }
+    } catch {
+      // fall through to CoinGecko
+    }
+  }
+
+  // --- CoinGecko: ID map -----------------------------------------------
+  const ids = symbols.map((s) => COINGECKO_ID[s.toUpperCase()]).filter(Boolean)
+  if (ids.length) {
+    try {
+      const res = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(
+          ',',
+        )}&vs_currencies=idr`,
+        { headers: { Accept: 'application/json' }, next: { revalidate: 60 } },
+      )
+      if (res.ok) {
+        const json = (await res.json()) as Record<string, { idr?: number }>
+        for (const sym of symbols) {
+          const id = COINGECKO_ID[sym.toUpperCase()]
+          // Strict IDR check to avoid USD injection
+          if (id && typeof json[id]?.idr === 'number') out.set(sym, json[id].idr!)
+        }
+      }
+    } catch {
+      // Keep whatever Binance returned.
+    }
+  }
+
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Gold (physical / Antam / UBS / digital) — auto-derived IDR per gram.
+// Source: COMEX gold futures (GC=F, USD/troy-oz) x USD/IDR rate.
+// 1 troy ounce = 31.1034768 grams.
+// ---------------------------------------------------------------------------
+const GOLD_ALIASES = new Set([
+  'EMAS',
+  'GOLD',
+  'ANTAM',
+  'UBS',
+  'XAU',
+  'XAUUSD',
+  'XAUIDR',
+  'LOGAMMULIA',
+  'DIGITALGOLD',
+  'GALERI24',
+  'LOGAM24',
+  'PEGADAIAN',
+  'EMASDIGITAL',
+])
+
+/**
+ * Text heuristic for holdings imported without an explicit `gold` class: the
+ * symbol or name mentions gold. Kept deliberately narrow — "GOLD" alone is a
+ * real NYSE ticker (Barrick Gold), so the declared class always wins first.
+ */
+const GOLD_TEXT = /(^|[^A-Z])(emas|gold|antam|logam\s*mulia|logam24|galeri24|xau)([^A-Z]|$)/i
+const TROY_OUNCE_IN_GRAMS = 31.1034768
+
+/** Symbols starting with these prefixes are treated as Indonesian retail bonds. */
+const BOND_PREFIX = /^(ORI|SR|FR|PBS|SBSN|SUKUK|ST|SBR|OBL)\d*/i
+
+export async function fetchGoldPerGram(): Promise<number | null> {
+  try {
+    const [goldRes, fxRes] = await Promise.all([
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=1d', {
+        headers: { 'User-Agent': UA },
+        next: { revalidate: 300 },
+      }),
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/USDIDR=X?interval=1d&range=1d', {
+        headers: { 'User-Agent': UA },
+        next: { revalidate: 300 },
+      }),
+    ])
+    if (!goldRes.ok || !fxRes.ok) return null
+    const goldJson = await goldRes.json()
+    const fxJson = await fxRes.json()
+    const usdPerOz = goldJson?.chart?.result?.[0]?.meta?.regularMarketPrice
+    const usdIdr = fxJson?.chart?.result?.[0]?.meta?.regularMarketPrice
+    if (typeof usdPerOz !== 'number' || typeof usdIdr !== 'number') return null
+    return Math.round((usdPerOz * usdIdr) / TROY_OUNCE_IN_GRAMS)
+  } catch {
+    return null
+  }
+}
+
+export interface PricedHolding {
+  id?: string
+  symbol: string
+  name: string
+  asset_class: string
+  quantity: number
+  avg_buy_price: number
+  current_price: number
+  /** Fetched live this request; false = stale DB value. */
+  live: boolean
+}
+
+/**
+ * Attach live market prices to holdings. Symbols are mapped by asset class:
+ * stocks → Yahoo (`.JK` assumed listed on IDX), crypto → CoinGecko IDR pairs.
+ */
+export async function applyLivePrices(
+  holdings: {
+    symbol: string
+    name: string
+    asset_class: string
+    quantity: number
+    avg_buy_price: number
+    current_price: number
+  }[],
+): Promise<PricedHolding[]> {
+  const stocks = holdings.filter((h) => h.asset_class === 'stock').map((h) => h.symbol)
+  const crypto = holdings.filter((h) => h.asset_class === 'crypto').map((h) => h.symbol)
+
+  const [stockPx, cryptoPx] = await Promise.all([
+    fetchYahoo(stocks),
+    fetchCrypto(crypto),
+  ])
+
+  // Gold: one network call shared by every gold holding.
+  const needsGold = holdings.some(
+    (h) =>
+      h.asset_class === 'gold' ||
+      GOLD_ALIASES.has(h.symbol.trim().toUpperCase()) ||
+      GOLD_TEXT.test(h.symbol) ||
+      GOLD_TEXT.test(h.name ?? ''),
+  )
+  const goldPerGram = needsGold ? await fetchGoldPerGram() : null
+
+  return holdings.map((h) => {
+    const sym = h.symbol.toUpperCase()
+
+    // Primary source by declared asset class.
+    let livePx: number | undefined
+    if (h.asset_class === 'stock') {
+      livePx = stockPx.get(h.symbol)
+    } else if (h.asset_class === 'crypto') {
+      livePx = cryptoPx.get(sym)
+    } else if (h.asset_class === 'gold') {
+      livePx = goldPerGram ?? undefined
+    }
+
+    // Gold aliases act as a FALLBACK only: a symbol like "GOLD" is also a real
+    // Yahoo ticker (Barrick Gold Corp), so the declared class wins and the
+    // alias only applies when that lookup produced nothing.
+    const looksLikeGold =
+      GOLD_ALIASES.has(sym) || GOLD_TEXT.test(sym) || GOLD_TEXT.test(h.name ?? '')
+
+    if (livePx == null && (h.asset_class === 'gold' || looksLikeGold)) {
+      livePx = goldPerGram ?? undefined
+    }
+
+    // Retail bonds are quoted at par: Rp 1.000.000 per unit. No public feed
+    // exists for Indonesian retail bonds, so fall back to par only when the
+    // stored price is unusable.
+    if (livePx == null && (h.asset_class === 'bond' || BOND_PREFIX.test(sym))) {
+      livePx = h.current_price > 0 ? undefined : 1_000_000
+    }
+
+    return livePx != null
+      ? { ...h, current_price: livePx, live: true }
+      : { ...h, live: false }
+  })
+}
+```
+
+### C.4 `src/app/api/prices/route.ts`
+
+_77 baris · 3,068 karakter_
+
+```typescript
+import { NextResponse } from 'next/server'
+import { fetchGoldPerGram } from '@/lib/finance/prices'
+
+const GOLD_SYMBOLS = new Set(['EMAS', 'GOLD', 'ANTM', 'UBS', 'XAU', 'XAUUSD', 'XAUIDR', 'LOGAMMULIA', 'DIGITALGOLD', 'GALERI24', 'LOGAM24', 'PEGADAIAN', 'EMASDIGITAL'])
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  const symbol = searchParams.get('symbol')?.trim().toUpperCase()
+  if (!symbol) return NextResponse.json({ price: null })
+
+  try {
+    if (GOLD_SYMBOLS.has(symbol)) {
+      const goldPx = await fetchGoldPerGram()
+      if (goldPx != null) return NextResponse.json({ price: goldPx })
+    }
+
+    // 1. Automatic Gold Price (IDR per gram) from Yahoo Finance GC=F & USDIDR=X
+    if (['EMAS', 'GOLD', 'ANTM', 'UBS', 'XAU'].includes(symbol)) {
+      const [goldRes, fxRes] = await Promise.all([
+        fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=1d', {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        }),
+        fetch('https://query1.finance.yahoo.com/v8/finance/chart/USDIDR=X?interval=1d&range=1d', {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        }),
+      ])
+
+      const goldJson = await goldRes.json()
+      const fxJson = await fxRes.json()
+
+      const goldUsd = goldJson?.chart?.result?.[0]?.meta?.regularMarketPrice
+      const usdIdr = fxJson?.chart?.result?.[0]?.meta?.regularMarketPrice
+
+      if (goldUsd && usdIdr) {
+        // 1 troy oz = 31.1034768 grams
+        const pricePerGramIdr = Math.round((goldUsd * usdIdr) / 31.1034768)
+        return NextResponse.json({ price: pricePerGramIdr })
+      }
+    }
+
+    // 2. Government Retail Bonds (ORI, SR, FR, PBS) -> Par value default Rp 1,000,000 or 100%
+    if (/^(ORI|SR|FR|PBS)\d+/i.test(symbol) || symbol.startsWith('OBL')) {
+      return NextResponse.json({ price: 1000000 })
+    }
+
+    if (symbol.endsWith('.JK')) {
+      // Yahoo stock (IDX)
+      const res = await fetch(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' } },
+      )
+      const json = await res.json()
+      const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice
+      if (price != null) return NextResponse.json({ price })
+    } else {
+      // Binance crypto — try the IDR pair directly
+      const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}IDR`)
+      if (res.ok) {
+        const json = await res.json()
+        if (json?.price) return NextResponse.json({ price: Number(json.price) })
+      }
+      // Fallback: CoinGecko
+      const cgRes = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${symbol.toLowerCase()}&vs_currencies=idr`,
+      )
+      if (cgRes.ok) {
+        const cgJson = await cgRes.json()
+        const id = Object.keys(cgJson)[0]
+        if (cgJson[id]?.idr) return NextResponse.json({ price: cgJson[id].idr })
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return NextResponse.json({ price: null })
+}
+```
+
+### C.5 `src/app/actions.ts`
+
+_695 baris · 21,102 karakter_
 
 ```typescript
 'use server'
@@ -546,12 +1106,17 @@ export async function addTransaction(input: {
     .eq('name', input.category)
     .maybeSingle()
 
+  let finalDescription = input.description || input.category
+  if (!cat?.id && input.category && !finalDescription.toLowerCase().includes(input.category.toLowerCase())) {
+    finalDescription = '[' + input.category + '] ' + finalDescription
+  }
+
   const { error } = await supabase.from('transactions').insert({
     user_id: user.id,
     amount: input.amount,
     type: input.type,
     category_id: cat?.id ?? null,
-    description: input.description,
+    description: finalDescription,
     date: input.date,
     account: input.account,
     source: 'manual',
@@ -1185,278 +1750,7 @@ export async function transferBetweenAccounts(input: {
 }
 ```
 
-### C.3 `src/lib/finance/prices.ts`
-
-_264 baris · 8,415 karakter_
-
-```typescript
-/**
- * Live price fetcher, all denominated in IDR so PL is computed against avg_buy_price.
- *   stock       -> Yahoo Finance (.JK / IDX)
- *   crypto      -> Binance IDR pairs, CoinGecko fallback
- *   gold        -> COMEX GC=F (USD/oz) x USD/IDR, converted to Rp per gram
- *   bond        -> retail par value (Rp 1.000.000/unit); no public feed exists
- *   mutual_fund -> no public NAV API exists in Indonesia; keeps stored NAV
- */
-
-const UA = 'Mozilla/5.0 (finance-dashboard)'
-
-interface YahooMeta {
-  regularMarketPrice: number | null
-  currency: string | null
-}
-
-async function fetchYahoo(symbols: string[]): Promise<Map<string, number>> {
-  const out = new Map<string, number>()
-  if (!symbols.length) return out
-  await Promise.all(
-    symbols.map(async (sym) => {
-      try {
-        const res = await fetch(
-          `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
-            sym,
-          )}?interval=1d&range=1d`,
-          { headers: { 'User-Agent': UA }, next: { revalidate: 60 } },
-        )
-        if (!res.ok) return
-        const json = await res.json()
-        const meta = json?.chart?.result?.[0]?.meta as YahooMeta | undefined
-        if (meta?.regularMarketPrice != null) out.set(sym, meta.regularMarketPrice)
-      } catch {
-        // Network/parse failure → keep the stored price.
-      }
-    }),
-  )
-  return out
-}
-
-const COINGECKO_ID: Record<string, string> = {
-  BTC: 'bitcoin',
-  ETH: 'ethereum',
-  SOL: 'solana',
-  BNB: 'binancecoin',
-  ADA: 'cardano',
-  DOGE: 'dogecoin',
-  USDT: 'tether',
-  SUI: 'sui',
-}
-
-/** Crypto pairs Binance quotes directly against IDR. */
-const BINANCE_SUPPORTED = new Set([
-  'BTCIDR',
-  'ETHIDR',
-  'BNBIDR',
-  'SOLIDR',
-  'ADAIDR',
-  'DOGEIDR',
-  'AVAXIDR',
-  'LINKIDR',
-  'MATICIDR',
-  'DOTIDR',
-  'LTCIDR',
-  'TRXIDR',
-  'XRPIDR',
-  'SUIIDR',
-])
-
-/**
- * Fetch crypto IDR prices. Tries CoinGecko first; falls back to Binance
- * (IDR pairs) when CoinGecko is rate-limiting (403).
- */
-async function fetchCrypto(symbols: string[]): Promise<Map<string, number>> {
-  const out = new Map<string, number>()
-
-  // --- Binance: bulk ticker, one request --------------------------------
-  const binSyms = symbols.filter((s) => !s.toUpperCase().endsWith('IDR'))
-  const pairs = binSyms
-    .map((s) => `${s.toUpperCase()}IDR`)
-    .filter((p) => BINANCE_SUPPORTED.has(p))
-  if (pairs.length) {
-    try {
-      const res = await fetch(
-        `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(
-          JSON.stringify(pairs),
-        )}`,
-        { headers: { Accept: 'application/json' }, next: { revalidate: 60 } },
-      )
-      if (res.ok) {
-        const json = (await res.json()) as { symbol: string; price: string }[]
-        for (const t of json) {
-          const sym = t.symbol.replace(/IDR$/, '')
-          const n = Number(t.price)
-          if (n > 0) out.set(sym, n)
-        }
-        if (out.size === binSyms.length) return out // all resolved
-      }
-    } catch {
-      // fall through to CoinGecko
-    }
-  }
-
-  // --- CoinGecko: ID map -----------------------------------------------
-  const ids = symbols.map((s) => COINGECKO_ID[s.toUpperCase()]).filter(Boolean)
-  if (ids.length) {
-    try {
-      const res = await fetch(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(
-          ',',
-        )}&vs_currencies=idr`,
-        { headers: { Accept: 'application/json' }, next: { revalidate: 60 } },
-      )
-      if (res.ok) {
-        const json = (await res.json()) as Record<string, { idr?: number }>
-        for (const sym of symbols) {
-          const id = COINGECKO_ID[sym.toUpperCase()]
-          // Strict IDR check to avoid USD injection
-          if (id && typeof json[id]?.idr === 'number') out.set(sym, json[id].idr!)
-        }
-      }
-    } catch {
-      // Keep whatever Binance returned.
-    }
-  }
-
-  return out
-}
-
-// ---------------------------------------------------------------------------
-// Gold (physical / Antam / UBS / digital) — auto-derived IDR per gram.
-// Source: COMEX gold futures (GC=F, USD/troy-oz) x USD/IDR rate.
-// 1 troy ounce = 31.1034768 grams.
-// ---------------------------------------------------------------------------
-const GOLD_ALIASES = new Set([
-  'EMAS',
-  'GOLD',
-  'ANTAM',
-  'UBS',
-  'XAU',
-  'XAUUSD',
-  'XAUIDR',
-  'LOGAMMULIA',
-  'DIGITALGOLD',
-  'GALERI24',
-  'LOGAM24',
-  'PEGADAIAN',
-  'EMASDIGITAL',
-])
-
-/**
- * Text heuristic for holdings imported without an explicit `gold` class: the
- * symbol or name mentions gold. Kept deliberately narrow — "GOLD" alone is a
- * real NYSE ticker (Barrick Gold), so the declared class always wins first.
- */
-const GOLD_TEXT = /(^|[^A-Z])(emas|gold|antam|logam\s*mulia|logam24|galeri24|xau)([^A-Z]|$)/i
-const TROY_OUNCE_IN_GRAMS = 31.1034768
-
-/** Symbols starting with these prefixes are treated as Indonesian retail bonds. */
-const BOND_PREFIX = /^(ORI|SR|FR|PBS|SBSN|SUKUK|ST|SBR|OBL)\d*/i
-
-export async function fetchGoldPerGram(): Promise<number | null> {
-  try {
-    const [goldRes, fxRes] = await Promise.all([
-      fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=1d', {
-        headers: { 'User-Agent': UA },
-        next: { revalidate: 300 },
-      }),
-      fetch('https://query1.finance.yahoo.com/v8/finance/chart/USDIDR=X?interval=1d&range=1d', {
-        headers: { 'User-Agent': UA },
-        next: { revalidate: 300 },
-      }),
-    ])
-    if (!goldRes.ok || !fxRes.ok) return null
-    const goldJson = await goldRes.json()
-    const fxJson = await fxRes.json()
-    const usdPerOz = goldJson?.chart?.result?.[0]?.meta?.regularMarketPrice
-    const usdIdr = fxJson?.chart?.result?.[0]?.meta?.regularMarketPrice
-    if (typeof usdPerOz !== 'number' || typeof usdIdr !== 'number') return null
-    return Math.round((usdPerOz * usdIdr) / TROY_OUNCE_IN_GRAMS)
-  } catch {
-    return null
-  }
-}
-
-export interface PricedHolding {
-  id?: string
-  symbol: string
-  name: string
-  asset_class: string
-  quantity: number
-  avg_buy_price: number
-  current_price: number
-  /** Fetched live this request; false = stale DB value. */
-  live: boolean
-}
-
-/**
- * Attach live market prices to holdings. Symbols are mapped by asset class:
- * stocks → Yahoo (`.JK` assumed listed on IDX), crypto → CoinGecko IDR pairs.
- */
-export async function applyLivePrices(
-  holdings: {
-    symbol: string
-    name: string
-    asset_class: string
-    quantity: number
-    avg_buy_price: number
-    current_price: number
-  }[],
-): Promise<PricedHolding[]> {
-  const stocks = holdings.filter((h) => h.asset_class === 'stock').map((h) => h.symbol)
-  const crypto = holdings.filter((h) => h.asset_class === 'crypto').map((h) => h.symbol)
-
-  const [stockPx, cryptoPx] = await Promise.all([
-    fetchYahoo(stocks),
-    fetchCrypto(crypto),
-  ])
-
-  // Gold: one network call shared by every gold holding.
-  const needsGold = holdings.some(
-    (h) =>
-      h.asset_class === 'gold' ||
-      GOLD_ALIASES.has(h.symbol.trim().toUpperCase()) ||
-      GOLD_TEXT.test(h.symbol) ||
-      GOLD_TEXT.test(h.name ?? ''),
-  )
-  const goldPerGram = needsGold ? await fetchGoldPerGram() : null
-
-  return holdings.map((h) => {
-    const sym = h.symbol.toUpperCase()
-
-    // Primary source by declared asset class.
-    let livePx: number | undefined
-    if (h.asset_class === 'stock') {
-      livePx = stockPx.get(h.symbol)
-    } else if (h.asset_class === 'crypto') {
-      livePx = cryptoPx.get(sym)
-    } else if (h.asset_class === 'gold') {
-      livePx = goldPerGram ?? undefined
-    }
-
-    // Gold aliases act as a FALLBACK only: a symbol like "GOLD" is also a real
-    // Yahoo ticker (Barrick Gold Corp), so the declared class wins and the
-    // alias only applies when that lookup produced nothing.
-    const looksLikeGold =
-      GOLD_ALIASES.has(sym) || GOLD_TEXT.test(sym) || GOLD_TEXT.test(h.name ?? '')
-
-    if (livePx == null && (h.asset_class === 'gold' || looksLikeGold)) {
-      livePx = goldPerGram ?? undefined
-    }
-
-    // Retail bonds are quoted at par: Rp 1.000.000 per unit. No public feed
-    // exists for Indonesian retail bonds, so fall back to par only when the
-    // stored price is unusable.
-    if (livePx == null && (h.asset_class === 'bond' || BOND_PREFIX.test(sym))) {
-      livePx = h.current_price > 0 ? undefined : 1_000_000
-    }
-
-    return livePx != null
-      ? { ...h, current_price: livePx, live: true }
-      : { ...h, live: false }
-  })
-}
-```
-
-### C.4 `src/components/holdings-table.tsx`
+### C.6 `src/components/holdings-table.tsx`
 
 _469 baris · 18,433 karakter_
 
@@ -1932,9 +2226,9 @@ function SellRow({
 }
 ```
 
-### C.5 `src/components/auth-actions.tsx`
+### C.7 `src/components/auth-actions.tsx`
 
-_990 baris · 39,340 karakter_
+_991 baris · 39,511 karakter_
 
 ```tsx
 'use client'
@@ -1989,13 +2283,14 @@ export function AddTransactionButton({
     setError(null)
     setLoading(true)
 
+    const validAccount = accountNames.includes(account) ? account : (accountNames[0] || 'BCA')
     const res = await addTransaction({
       amount: Number(amount),
       type,
       category,
       description: description || category,
       date,
-      account,
+      account: validAccount,
     })
 
     setLoading(false)
@@ -2132,7 +2427,7 @@ export function AddTransactionButton({
                     Akun
                   </label>
                   <select
-                    value={account}
+                    value={accountNames.includes(account) ? account : (accountNames[0] || 'BCA')}
                     onChange={(e) => setAccount(e.target.value)}
                     className="w-full cursor-pointer rounded-lg border border-white/[.08] bg-[#0e1015] px-3 py-2.5 text-sm text-white outline-none transition-colors focus:border-emerald-500/40"
                   >
@@ -2929,543 +3224,9 @@ ANTM,Aneka Tambang,gold,100,15000`}
 }
 ```
 
-### C.6 `src/components/nav.tsx`
-
-_147 baris · 4,906 karakter_
-
-```tsx
-'use client'
-
-import { useRouter, usePathname, useSearchParams } from 'next/navigation'
-import { useCallback, useEffect, useState, useTransition } from 'react'
-
-const NAV = [
-  { label: 'Ringkasan', id: 'top' },
-  { label: 'Rasio & Risiko', id: 'rasio-risiko' },
-  { label: 'Arus Kas', id: 'arus-kas' },
-  { label: 'Portofolio', id: 'portofolio' },
-  { label: 'Anggaran', id: 'anggaran' },
-  { label: 'Transaksi', id: 'transaksi' },
-] as const
-
-export function SidebarNav() {
-  const router = useRouter()
-  const pathname = usePathname()
-  const sp = useSearchParams()
-
-  const [active, setActive] = useState(() => sp.get('view') || 'top')
-
-  // Scroll-spy: highlight the nav item for the section currently in view.
-  useEffect(() => {
-    const sections = NAV.map((n) => document.getElementById(n.id)).filter(
-      Boolean,
-    ) as HTMLElement[]
-    if (!sections.length) return
-
-    let raf = 0
-    const compute = () => {
-      raf = 0
-      const line = window.scrollY + window.innerHeight * 0.28
-      // Pick the section nearest the focus line — when two sections share an
-      // offset (a panel nested inside a section), the first one wins.
-      let current = sections[0].id
-      let bestDist = Math.abs(sections[0].offsetTop - line)
-      for (const s of sections) {
-        const top = s.getBoundingClientRect().top + window.scrollY
-        const dist = Math.abs(top - line)
-        if (top <= line && dist <= bestDist) {
-          current = s.id
-          bestDist = dist
-        }
-      }
-      setActive((prev) => (prev === current ? prev : current))
-    }
-    const onScroll = () => {
-      if (!raf) raf = requestAnimationFrame(compute)
-    }
-    window.addEventListener('scroll', onScroll, { passive: true })
-    compute()
-
-    return () => {
-      window.removeEventListener('scroll', onScroll)
-      if (raf) cancelAnimationFrame(raf)
-    }
-  }, [])
-
-  const scrollTo = useCallback(
-    (id: string) => {
-      setActive(id)
-      if (id === 'top') {
-        window.scrollTo({ top: 0, behavior: 'smooth' })
-      } else {
-        document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }
-      // Keep `view` in sync so refresh preserves position context.
-      const q = new URLSearchParams(sp.toString())
-      if (id === 'top') q.delete('view')
-      else q.set('view', id)
-      router.replace(`${pathname}?${q.toString()}`, { scroll: false })
-    },
-    [router, pathname, sp],
-  )
-
-  return (
-    <nav className="mt-9 space-y-1">
-      {NAV.map((n) => {
-        const on = active === n.id
-        return (
-          <button
-            key={n.id}
-            onClick={() => scrollTo(n.id)}
-            className={`group relative flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] transition-colors duration-200 ${
-              on
-                ? 'bg-white/[.06] font-medium text-white'
-                : 'text-[#9aa0ac] hover:bg-white/[.03] hover:text-white'
-            }`}
-          >
-            {/* Active indicator bar */}
-            <span
-              className={`absolute left-0 top-1/2 h-4 -translate-y-1/2 rounded-r-full bg-emerald-400 transition-all duration-300 ease-out ${
-                on ? 'w-[3px] opacity-100' : 'w-0 opacity-0'
-              }`}
-            />
-            <span
-              className={`h-1.5 w-1.5 rounded-full transition-colors duration-200 ${
-                on ? 'bg-emerald-400' : 'bg-[#3a404c] group-hover:bg-[#5a616e]'
-              }`}
-            />
-            {n.label}
-          </button>
-        )
-      })}
-    </nav>
-  )
-}
-
-export function PeriodToggle() {
-  const router = useRouter()
-  const pathname = usePathname()
-  const sp = useSearchParams()
-  const [isPending, startTransition] = useTransition()
-  const current = Number(sp.get('months')) || 6
-  const [optimisticMonths, setOptimisticMonths] = useState<number>(current)
-
-  const setMonths = (m: number) => {
-    setOptimisticMonths(m)
-    const q = new URLSearchParams(sp.toString())
-    q.set('months', String(m))
-    startTransition(() => {
-      router.push(`${pathname}?${q.toString()}`, { scroll: false })
-    })
-  }
-
-  return (
-    <div className="flex items-center gap-1.5 rounded-full border border-white/[.10] bg-white/[.04] p-1 shadow-inner">
-      {[3, 6, 12].map((m) => {
-        const active = (isPending ? optimisticMonths : current) === m
-        return (
-          <button
-            key={m}
-            type="button"
-            onClick={() => setMonths(m)}
-            className={`cursor-pointer rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none ${
-              active
-                ? 'bg-emerald-500 text-[#052e1c] shadow-sm shadow-emerald-500/20'
-                : 'text-[#9aa0ac] hover:bg-white/[.06] hover:text-white'
-            }`}
-          >
-            {m} bln
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-```
-
-### C.7 `src/components/charts.tsx`
-
-_373 baris · 10,533 karakter_
-
-```tsx
-'use client'
-
-import { Line, Doughnut, Bar } from 'react-chartjs-2'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  ArcElement,
-  BarElement,
-  Tooltip,
-  Legend,
-  Filler,
-  type ChartData,
-  type ChartOptions,
-} from 'chart.js'
-import type { MonthBucket } from '@/lib/finance/aggregate'
-import { formatIDR, formatMonth, formatPct } from '@/lib/format'
-
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  ArcElement,
-  BarElement,
-  Tooltip,
-  Legend,
-  Filler,
-)
-
-const GRID = 'rgba(255,255,255,.055)' as const
-const TICK = '#646b78' as const
-const TOOLTIP_BG = '#11151c' as const
-
-const baseTooltip = {
-  backgroundColor: TOOLTIP_BG,
-  borderColor: 'rgba(255,255,255,.10)',
-  borderWidth: 1,
-  titleColor: '#f4f5f7',
-  bodyColor: '#9aa0ac',
-  padding: 10,
-  cornerRadius: 10,
-  displayColors: true,
-  boxPadding: 4,
-} as const
-
-// --- Cash flow: layered area chart ---------------------------------------
-
-const EASE = 'easeOutQuart' as const
-
-export function CashflowChart({ buckets }: { buckets: MonthBucket[] }) {
-  const labels = buckets.map((b) => formatMonth(b.month))
-  const mk = (
-    label: string,
-    data: number[],
-    color: string,
-  ): ChartData<'line'>['datasets'][number] => ({
-    label,
-    data,
-    borderColor: color,
-    backgroundColor: (ctx) => {
-      const { chart } = ctx
-      const { ctx: c, chartArea } = chart
-      if (!chartArea) return 'transparent'
-      const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom)
-      g.addColorStop(0, color + '2e')
-      g.addColorStop(1, color + '00')
-      return g
-    },
-    fill: true,
-    tension: 0.4,
-    borderWidth: 2,
-    pointRadius: 0,
-    pointHoverRadius: 5,
-    pointHoverBackgroundColor: color,
-    pointHoverBorderColor: '#0a0a0a',
-    pointHoverBorderWidth: 2,
-  })
-
-  const data: ChartData<'line'> = {
-    labels,
-    datasets: [
-      mk('Pemasukan', buckets.map((b) => b.income), '#34d399'),
-      mk('Pengeluaran', buckets.map((b) => b.expense), '#fb923c'),
-      // Net worth line: thin, dashed, emerald-white
-      {
-        label: 'Selisih',
-        data: buckets.map((b) => b.net),
-        borderColor: 'rgba(244,245,247,.45)',
-        borderWidth: 1.5,
-        borderDash: [4, 4],
-        tension: 0.4,
-        pointRadius: 0,
-        pointHoverRadius: 4,
-      },
-    ],
-  }
-
-  const options: ChartOptions<'line'> = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 900, easing: EASE },
-    interaction: { mode: 'index', intersect: false },
-    plugins: {
-      legend: {
-        display: true,
-        position: 'top',
-        align: 'end',
-        labels: {
-          color: TICK,
-          usePointStyle: true,
-          pointStyle: 'circle',
-          boxWidth: 7,
-          boxHeight: 7,
-          padding: 14,
-          font: { size: 11 },
-        },
-      },
-      tooltip: {
-        ...baseTooltip,
-        callbacks: { label: (c) => ` ${c.dataset.label}: ${formatIDR(Number(c.raw))}` },
-      },
-    },
-    scales: {
-      y: {
-        ticks: { color: TICK, font: { size: 10 }, callback: (v) => formatCompactT(Number(v)) },
-        grid: { color: GRID },
-        border: { display: false },
-      },
-      x: {
-        ticks: { color: TICK, font: { size: 10 } },
-        grid: { display: false },
-        border: { display: false },
-      },
-    },
-  }
-
-  return (
-    <div className="h-72">
-      <Line data={data} options={options} />
-    </div>
-  )
-}
-
-function formatCompactT(v: number): string {
-  const abs = Math.abs(v)
-  const s = v < 0 ? '-' : ''
-  if (abs >= 1e9) return `${s}${(abs / 1e9).toFixed(1).replace('.', ',')} M`
-  if (abs >= 1e6) return `${s}${(abs / 1e6).toFixed(1).replace('.', ',')} jt`
-  if (abs >= 1e3) return `${s}${(abs / 1e3).toFixed(0)} rb`
-  return `${s}${abs}`
-}
-
-// --- Expense breakdown doughnut ------------------------------------------
-
-export function CategoryChart({
-  data,
-}: {
-  data: { category: string; total: number }[]
-}) {
-  const palette = [
-    '#34d399', '#60a5fa', '#a78bfa', '#f472b6', '#facc15',
-    '#2dd4bf', '#fb7185', '#94a3b8', '#a3e635', '#38bdf8',
-  ]
-
-  const chartData: ChartData<'doughnut'> = {
-    labels: data.map((d) => d.category),
-    datasets: [
-      {
-        data: data.map((d) => d.total),
-        backgroundColor: palette,
-        borderColor: 'transparent',
-        borderWidth: 0,
-        hoverOffset: 8,
-        spacing: 2,
-      },
-    ],
-  }
-
-  const options: ChartOptions<'doughnut'> = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 800, easing: EASE, animateRotate: true, animateScale: true },
-    cutout: '68%',
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        ...baseTooltip,
-        callbacks: { label: (c) => ` ${c.label}: ${formatIDR(Number(c.raw))}` },
-      },
-    },
-  }
-
-  const total = data.reduce((s, d) => s + d.total, 0)
-
-  return (
-    <div className="flex flex-col items-center gap-5">
-      <div className="relative h-52 w-52">
-        <Doughnut data={chartData} options={options} />
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[10px] uppercase tracking-widest text-[#646b78]">
-            Total
-          </span>
-          <span className="mt-0.5 text-xl font-semibold tabular-nums text-white">
-            {formatIDR(total, { compact: true })}
-          </span>
-        </div>
-      </div>
-      {/* Legend as list with bar + amount */}
-      <ul className="w-full space-y-1.5">
-        {data.map((d, i) => (
-          <li key={d.category} className="flex items-center gap-2.5 text-xs">
-            <span
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: palette[i % palette.length] }}
-            />
-            <span className="w-24 truncate text-[#9aa0ac]">{d.category}</span>
-            <span className="flex-1" />
-            <span className="tabular-nums font-medium text-[#f4f5f7]">
-              {formatIDR(d.total, { compact: true })}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-// --- Portfolio by asset class (horizontal bar) ---------------------------
-
-export function PortfolioChart({
-  data,
-  costByClass,
-}: {
-  data: { assetClass: string; total: number }[]
-  costByClass?: { assetClass: string; total: number }[]
-}) {
-  const labels: Record<string, string> = {
-    stock: 'Saham',
-    crypto: 'Crypto',
-    mutual_fund: 'Reksa Dana',
-    bond: 'Obligasi',
-    gold: 'Emas',
-  }
-  const colors: Record<string, string> = {
-    stock: '#34d399',
-    crypto: '#a78bfa',
-    mutual_fund: '#60a5fa',
-    bond: '#facc15',
-    gold: '#fb923c',
-  }
-
-  const costMap = new Map(
-    (costByClass ?? []).map((c) => [c.assetClass, c.total]),
-  )
-
-  const chartData: ChartData<'bar'> = {
-    labels: data.map((d) => labels[d.assetClass] ?? d.assetClass),
-    datasets: [
-      {
-        label: 'Nilai Pasar',
-        data: data.map((d) => d.total),
-        backgroundColor: data.map((d) => (colors[d.assetClass] ?? '#34d399') + 'cc'),
-        hoverBackgroundColor: data.map((d) => colors[d.assetClass] ?? '#34d399'),
-        borderRadius: 6,
-        barThickness: 22,
-      },
-    ],
-  }
-
-  const options: ChartOptions<'bar'> = {
-    indexAxis: 'y',
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 900, easing: EASE, delay: (ctx) => ctx.dataIndex * 60 },
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        ...baseTooltip,
-        callbacks: { label: (c) => ` ${formatIDR(Number(c.raw))}` },
-      },
-    },
-    scales: {
-      x: {
-        ticks: { color: TICK, font: { size: 10 }, callback: (v) => formatCompactT(Number(v)) },
-        grid: { color: GRID },
-        border: { display: false },
-      },
-      y: {
-        ticks: { color: '#9aa0ac', font: { size: 11 } },
-        grid: { display: false },
-        border: { display: false },
-      },
-    },
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="h-56">
-        <Bar data={chartData} options={options} />
-      </div>
-      <ul className="space-y-1.5">
-        {data.map((d) => {
-          const cost = costMap.get(d.assetClass) ?? 0
-          const pl = d.total - cost
-          const plPct = cost > 0 ? (pl / cost) * 100 : 0
-          return (
-            <li key={d.assetClass} className="flex items-center gap-2 text-[11px]">
-              <span
-                className="h-2 w-2 shrink-0 rounded-full"
-                style={{ backgroundColor: colors[d.assetClass] ?? '#34d399' }}
-              />
-              <span className="text-[#9aa0ac]">{labels[d.assetClass] ?? d.assetClass}</span>
-              <span className="ml-auto font-medium tabular-nums text-white">
-                {formatIDR(d.total, { compact: true })}
-              </span>
-              {cost > 0 && (
-                <span
-                  className={`w-16 text-right tabular-nums ${
-                    pl >= 0 ? 'text-emerald-400' : 'text-orange-400'
-                  }`}
-                >
-                  {formatPct(plPct)}
-                </span>
-              )}
-            </li>
-          )
-        })}
-      </ul>
-    </div>
-  )
-}
-
-// --- Small sparkline for the stat cards ----------------------------------
-
-export function Sparkline({ values }: { values: number[] }) {
-  const data: ChartData<'line'> = {
-    labels: values.map((_, i) => i),
-    datasets: [
-      {
-        data: values,
-        borderColor: (values.at(-1) ?? 0) >= (values[0] ?? 0) ? '#34d399' : '#fb923c',
-        backgroundColor: (ctx) => {
-          const { chart } = ctx
-          const { ctx: c, chartArea } = chart
-          if (!chartArea) return 'transparent'
-          const up = (values.at(-1) ?? 0) >= (values[0] ?? 0)
-          const color = up ? '#34d399' : '#fb923c'
-          const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom)
-          g.addColorStop(0, color + '30')
-          g.addColorStop(1, color + '00')
-          return g
-        },
-        borderWidth: 1.75,
-        pointRadius: 0,
-        tension: 0.4,
-        fill: true,
-      },
-    ],
-  }
-
-  const options: ChartOptions<'line'> = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 1000, easing: EASE },
-    plugins: { legend: { display: false }, tooltip: { enabled: false } },
-    scales: { x: { display: false }, y: { display: false } },
-  }
-
-  return <div className="h-9">{<Line data={data} options={options} />}</div>
-}
-```
-
 ### C.8 `src/components/accounts-panel.tsx`
 
-_248 baris · 9,688 karakter_
+_250 baris · 9,770 karakter_
 
 ```tsx
 'use client'
@@ -3524,6 +3285,8 @@ export function AccountsPanel({
     if (res.error) {
       setError(res.error)
     } else {
+      if (fromAcc === name) setFromAcc('')
+      if (toAcc === name) setToAcc('')
       router.refresh()
     }
   }
@@ -3920,7 +3683,541 @@ export function RebalanceStressPanel({
 }
 ```
 
-### C.10 `src/app/page.tsx`
+### C.10 `src/components/nav.tsx`
+
+_147 baris · 4,906 karakter_
+
+```tsx
+'use client'
+
+import { useRouter, usePathname, useSearchParams } from 'next/navigation'
+import { useCallback, useEffect, useState, useTransition } from 'react'
+
+const NAV = [
+  { label: 'Ringkasan', id: 'top' },
+  { label: 'Rasio & Risiko', id: 'rasio-risiko' },
+  { label: 'Arus Kas', id: 'arus-kas' },
+  { label: 'Portofolio', id: 'portofolio' },
+  { label: 'Anggaran', id: 'anggaran' },
+  { label: 'Transaksi', id: 'transaksi' },
+] as const
+
+export function SidebarNav() {
+  const router = useRouter()
+  const pathname = usePathname()
+  const sp = useSearchParams()
+
+  const [active, setActive] = useState(() => sp.get('view') || 'top')
+
+  // Scroll-spy: highlight the nav item for the section currently in view.
+  useEffect(() => {
+    const sections = NAV.map((n) => document.getElementById(n.id)).filter(
+      Boolean,
+    ) as HTMLElement[]
+    if (!sections.length) return
+
+    let raf = 0
+    const compute = () => {
+      raf = 0
+      const line = window.scrollY + window.innerHeight * 0.28
+      // Pick the section nearest the focus line — when two sections share an
+      // offset (a panel nested inside a section), the first one wins.
+      let current = sections[0].id
+      let bestDist = Math.abs(sections[0].offsetTop - line)
+      for (const s of sections) {
+        const top = s.getBoundingClientRect().top + window.scrollY
+        const dist = Math.abs(top - line)
+        if (top <= line && dist <= bestDist) {
+          current = s.id
+          bestDist = dist
+        }
+      }
+      setActive((prev) => (prev === current ? prev : current))
+    }
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(compute)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    compute()
+
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [])
+
+  const scrollTo = useCallback(
+    (id: string) => {
+      setActive(id)
+      if (id === 'top') {
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      } else {
+        document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+      // Keep `view` in sync so refresh preserves position context.
+      const q = new URLSearchParams(sp.toString())
+      if (id === 'top') q.delete('view')
+      else q.set('view', id)
+      router.replace(`${pathname}?${q.toString()}`, { scroll: false })
+    },
+    [router, pathname, sp],
+  )
+
+  return (
+    <nav className="mt-9 space-y-1">
+      {NAV.map((n) => {
+        const on = active === n.id
+        return (
+          <button
+            key={n.id}
+            onClick={() => scrollTo(n.id)}
+            className={`group relative flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] transition-colors duration-200 ${
+              on
+                ? 'bg-white/[.06] font-medium text-white'
+                : 'text-[#9aa0ac] hover:bg-white/[.03] hover:text-white'
+            }`}
+          >
+            {/* Active indicator bar */}
+            <span
+              className={`absolute left-0 top-1/2 h-4 -translate-y-1/2 rounded-r-full bg-emerald-400 transition-all duration-300 ease-out ${
+                on ? 'w-[3px] opacity-100' : 'w-0 opacity-0'
+              }`}
+            />
+            <span
+              className={`h-1.5 w-1.5 rounded-full transition-colors duration-200 ${
+                on ? 'bg-emerald-400' : 'bg-[#3a404c] group-hover:bg-[#5a616e]'
+              }`}
+            />
+            {n.label}
+          </button>
+        )
+      })}
+    </nav>
+  )
+}
+
+export function PeriodToggle() {
+  const router = useRouter()
+  const pathname = usePathname()
+  const sp = useSearchParams()
+  const [isPending, startTransition] = useTransition()
+  const current = Number(sp.get('months')) || 6
+  const [optimisticMonths, setOptimisticMonths] = useState<number>(current)
+
+  const setMonths = (m: number) => {
+    setOptimisticMonths(m)
+    const q = new URLSearchParams(sp.toString())
+    q.set('months', String(m))
+    startTransition(() => {
+      router.push(`${pathname}?${q.toString()}`, { scroll: false })
+    })
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 rounded-full border border-white/[.10] bg-white/[.04] p-1 shadow-inner">
+      {[3, 6, 12].map((m) => {
+        const active = (isPending ? optimisticMonths : current) === m
+        return (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMonths(m)}
+            className={`cursor-pointer rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none ${
+              active
+                ? 'bg-emerald-500 text-[#052e1c] shadow-sm shadow-emerald-500/20'
+                : 'text-[#9aa0ac] hover:bg-white/[.06] hover:text-white'
+            }`}
+          >
+            {m} bln
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+```
+
+### C.11 `src/components/charts.tsx`
+
+_373 baris · 10,533 karakter_
+
+```tsx
+'use client'
+
+import { Line, Doughnut, Bar } from 'react-chartjs-2'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  ArcElement,
+  BarElement,
+  Tooltip,
+  Legend,
+  Filler,
+  type ChartData,
+  type ChartOptions,
+} from 'chart.js'
+import type { MonthBucket } from '@/lib/finance/aggregate'
+import { formatIDR, formatMonth, formatPct } from '@/lib/format'
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  ArcElement,
+  BarElement,
+  Tooltip,
+  Legend,
+  Filler,
+)
+
+const GRID = 'rgba(255,255,255,.055)' as const
+const TICK = '#646b78' as const
+const TOOLTIP_BG = '#11151c' as const
+
+const baseTooltip = {
+  backgroundColor: TOOLTIP_BG,
+  borderColor: 'rgba(255,255,255,.10)',
+  borderWidth: 1,
+  titleColor: '#f4f5f7',
+  bodyColor: '#9aa0ac',
+  padding: 10,
+  cornerRadius: 10,
+  displayColors: true,
+  boxPadding: 4,
+} as const
+
+// --- Cash flow: layered area chart ---------------------------------------
+
+const EASE = 'easeOutQuart' as const
+
+export function CashflowChart({ buckets }: { buckets: MonthBucket[] }) {
+  const labels = buckets.map((b) => formatMonth(b.month))
+  const mk = (
+    label: string,
+    data: number[],
+    color: string,
+  ): ChartData<'line'>['datasets'][number] => ({
+    label,
+    data,
+    borderColor: color,
+    backgroundColor: (ctx) => {
+      const { chart } = ctx
+      const { ctx: c, chartArea } = chart
+      if (!chartArea) return 'transparent'
+      const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom)
+      g.addColorStop(0, color + '2e')
+      g.addColorStop(1, color + '00')
+      return g
+    },
+    fill: true,
+    tension: 0.4,
+    borderWidth: 2,
+    pointRadius: 0,
+    pointHoverRadius: 5,
+    pointHoverBackgroundColor: color,
+    pointHoverBorderColor: '#0a0a0a',
+    pointHoverBorderWidth: 2,
+  })
+
+  const data: ChartData<'line'> = {
+    labels,
+    datasets: [
+      mk('Pemasukan', buckets.map((b) => b.income), '#34d399'),
+      mk('Pengeluaran', buckets.map((b) => b.expense), '#fb923c'),
+      // Net worth line: thin, dashed, emerald-white
+      {
+        label: 'Selisih',
+        data: buckets.map((b) => b.net),
+        borderColor: 'rgba(244,245,247,.45)',
+        borderWidth: 1.5,
+        borderDash: [4, 4],
+        tension: 0.4,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+      },
+    ],
+  }
+
+  const options: ChartOptions<'line'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 900, easing: EASE },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: {
+        display: true,
+        position: 'top',
+        align: 'end',
+        labels: {
+          color: TICK,
+          usePointStyle: true,
+          pointStyle: 'circle',
+          boxWidth: 7,
+          boxHeight: 7,
+          padding: 14,
+          font: { size: 11 },
+        },
+      },
+      tooltip: {
+        ...baseTooltip,
+        callbacks: { label: (c) => ` ${c.dataset.label}: ${formatIDR(Number(c.raw))}` },
+      },
+    },
+    scales: {
+      y: {
+        ticks: { color: TICK, font: { size: 10 }, callback: (v) => formatCompactT(Number(v)) },
+        grid: { color: GRID },
+        border: { display: false },
+      },
+      x: {
+        ticks: { color: TICK, font: { size: 10 } },
+        grid: { display: false },
+        border: { display: false },
+      },
+    },
+  }
+
+  return (
+    <div className="h-72">
+      <Line data={data} options={options} />
+    </div>
+  )
+}
+
+function formatCompactT(v: number): string {
+  const abs = Math.abs(v)
+  const s = v < 0 ? '-' : ''
+  if (abs >= 1e9) return `${s}${(abs / 1e9).toFixed(1).replace('.', ',')} M`
+  if (abs >= 1e6) return `${s}${(abs / 1e6).toFixed(1).replace('.', ',')} jt`
+  if (abs >= 1e3) return `${s}${(abs / 1e3).toFixed(0)} rb`
+  return `${s}${abs}`
+}
+
+// --- Expense breakdown doughnut ------------------------------------------
+
+export function CategoryChart({
+  data,
+}: {
+  data: { category: string; total: number }[]
+}) {
+  const palette = [
+    '#34d399', '#60a5fa', '#a78bfa', '#f472b6', '#facc15',
+    '#2dd4bf', '#fb7185', '#94a3b8', '#a3e635', '#38bdf8',
+  ]
+
+  const chartData: ChartData<'doughnut'> = {
+    labels: data.map((d) => d.category),
+    datasets: [
+      {
+        data: data.map((d) => d.total),
+        backgroundColor: palette,
+        borderColor: 'transparent',
+        borderWidth: 0,
+        hoverOffset: 8,
+        spacing: 2,
+      },
+    ],
+  }
+
+  const options: ChartOptions<'doughnut'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 800, easing: EASE, animateRotate: true, animateScale: true },
+    cutout: '68%',
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        ...baseTooltip,
+        callbacks: { label: (c) => ` ${c.label}: ${formatIDR(Number(c.raw))}` },
+      },
+    },
+  }
+
+  const total = data.reduce((s, d) => s + d.total, 0)
+
+  return (
+    <div className="flex flex-col items-center gap-5">
+      <div className="relative h-52 w-52">
+        <Doughnut data={chartData} options={options} />
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-[10px] uppercase tracking-widest text-[#646b78]">
+            Total
+          </span>
+          <span className="mt-0.5 text-xl font-semibold tabular-nums text-white">
+            {formatIDR(total, { compact: true })}
+          </span>
+        </div>
+      </div>
+      {/* Legend as list with bar + amount */}
+      <ul className="w-full space-y-1.5">
+        {data.map((d, i) => (
+          <li key={d.category} className="flex items-center gap-2.5 text-xs">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: palette[i % palette.length] }}
+            />
+            <span className="w-24 truncate text-[#9aa0ac]">{d.category}</span>
+            <span className="flex-1" />
+            <span className="tabular-nums font-medium text-[#f4f5f7]">
+              {formatIDR(d.total, { compact: true })}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+// --- Portfolio by asset class (horizontal bar) ---------------------------
+
+export function PortfolioChart({
+  data,
+  costByClass,
+}: {
+  data: { assetClass: string; total: number }[]
+  costByClass?: { assetClass: string; total: number }[]
+}) {
+  const labels: Record<string, string> = {
+    stock: 'Saham',
+    crypto: 'Crypto',
+    mutual_fund: 'Reksa Dana',
+    bond: 'Obligasi',
+    gold: 'Emas',
+  }
+  const colors: Record<string, string> = {
+    stock: '#34d399',
+    crypto: '#a78bfa',
+    mutual_fund: '#60a5fa',
+    bond: '#facc15',
+    gold: '#fb923c',
+  }
+
+  const costMap = new Map(
+    (costByClass ?? []).map((c) => [c.assetClass, c.total]),
+  )
+
+  const chartData: ChartData<'bar'> = {
+    labels: data.map((d) => labels[d.assetClass] ?? d.assetClass),
+    datasets: [
+      {
+        label: 'Nilai Pasar',
+        data: data.map((d) => d.total),
+        backgroundColor: data.map((d) => (colors[d.assetClass] ?? '#34d399') + 'cc'),
+        hoverBackgroundColor: data.map((d) => colors[d.assetClass] ?? '#34d399'),
+        borderRadius: 6,
+        barThickness: 22,
+      },
+    ],
+  }
+
+  const options: ChartOptions<'bar'> = {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 900, easing: EASE, delay: (ctx) => ctx.dataIndex * 60 },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        ...baseTooltip,
+        callbacks: { label: (c) => ` ${formatIDR(Number(c.raw))}` },
+      },
+    },
+    scales: {
+      x: {
+        ticks: { color: TICK, font: { size: 10 }, callback: (v) => formatCompactT(Number(v)) },
+        grid: { color: GRID },
+        border: { display: false },
+      },
+      y: {
+        ticks: { color: '#9aa0ac', font: { size: 11 } },
+        grid: { display: false },
+        border: { display: false },
+      },
+    },
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="h-56">
+        <Bar data={chartData} options={options} />
+      </div>
+      <ul className="space-y-1.5">
+        {data.map((d) => {
+          const cost = costMap.get(d.assetClass) ?? 0
+          const pl = d.total - cost
+          const plPct = cost > 0 ? (pl / cost) * 100 : 0
+          return (
+            <li key={d.assetClass} className="flex items-center gap-2 text-[11px]">
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: colors[d.assetClass] ?? '#34d399' }}
+              />
+              <span className="text-[#9aa0ac]">{labels[d.assetClass] ?? d.assetClass}</span>
+              <span className="ml-auto font-medium tabular-nums text-white">
+                {formatIDR(d.total, { compact: true })}
+              </span>
+              {cost > 0 && (
+                <span
+                  className={`w-16 text-right tabular-nums ${
+                    pl >= 0 ? 'text-emerald-400' : 'text-orange-400'
+                  }`}
+                >
+                  {formatPct(plPct)}
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+// --- Small sparkline for the stat cards ----------------------------------
+
+export function Sparkline({ values }: { values: number[] }) {
+  const data: ChartData<'line'> = {
+    labels: values.map((_, i) => i),
+    datasets: [
+      {
+        data: values,
+        borderColor: (values.at(-1) ?? 0) >= (values[0] ?? 0) ? '#34d399' : '#fb923c',
+        backgroundColor: (ctx) => {
+          const { chart } = ctx
+          const { ctx: c, chartArea } = chart
+          if (!chartArea) return 'transparent'
+          const up = (values.at(-1) ?? 0) >= (values[0] ?? 0)
+          const color = up ? '#34d399' : '#fb923c'
+          const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom)
+          g.addColorStop(0, color + '30')
+          g.addColorStop(1, color + '00')
+          return g
+        },
+        borderWidth: 1.75,
+        pointRadius: 0,
+        tension: 0.4,
+        fill: true,
+      },
+    ],
+  }
+
+  const options: ChartOptions<'line'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 1000, easing: EASE },
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: { x: { display: false }, y: { display: false } },
+  }
+
+  return <div className="h-9">{<Line data={data} options={options} />}</div>
+}
+```
+
+### C.12 `src/app/page.tsx`
 
 _527 baris · 23,154 karakter_
 
@@ -4454,7 +4751,7 @@ function RecentActivity({ activity }: { activity: ActivityEvent[] }) {
 }
 ```
 
-### C.11 `src/app/auth/page.tsx`
+### C.13 `src/app/auth/page.tsx`
 
 _98 baris · 3,531 karakter_
 
@@ -4559,9 +4856,9 @@ export default async function AuthPage({
 }
 ```
 
-### C.12 `scripts/checks/check-aggregate.ts`
+### C.14 `scripts/checks/check-aggregate.ts`
 
-_203 baris · 10,121 karakter_
+_231 baris · 11,732 karakter_
 
 ```typescript
 import assert from 'node:assert'
@@ -4765,9 +5062,37 @@ assert.equal(topUpCrypto.topUpBuy, 0, '0 freshCash goes to overweight crypto')
 const zeroTopUp = topUpAllocation(port.byClass, port.value, 0)
 assert.ok(zeroTopUp.every((d) => d.topUpBuy === 0))
 
+// --- FINAL POLISH (BAGIAN 5 TESTS) ---
+// 1. Uji passiveIncomeMetrics ketika kategori 'Lainnya' tetapi description '[Dividen & Kupon] Dividen interim BBCA'
+const descPassiveTxs: Tx[] = [
+  ...txs,
+  {
+    amount: 750_000,
+    type: 'income',
+    category: 'Lainnya',
+    description: '[Dividen & Kupon] Dividen interim BBCA',
+    date: '2026-02-20',
+  },
+]
+const descPassive = passiveIncomeMetrics(descPassiveTxs, 2_150_000)
+assert.equal(descPassive.totalPassiveIncome, 750_000, 'detected passive income via description tag')
+assert.equal(descPassive.latestMonthPassive, 750_000, 'detected latest month passive via description tag')
+
+// 2. Uji stressTestPortfolio skenario safe-haven positif (10g emas @ 1.5jt = 15jt, shock gold: +10%)
+const goldHolding: Holding[] = [
+  { symbol: 'EMAS', name: 'Logam Mulia', asset_class: 'gold', quantity: 10, avg_buy_price: 1_000_000, current_price: 1_500_000 },
+]
+const initialWorth = { assets: 20_000_000, debts: 5_000_000, net: 15_000_000 }
+const goldStress = stressTestPortfolio(goldHolding, initialWorth, { gold: 10 })
+assert.equal(goldStress.basePortfolio, 15_000_000, 'base portfolio is 15M')
+assert.ok(Math.abs(goldStress.stressedPortfolio - 16_500_000) < 0.01, 'stressed portfolio increases +10% to 16.5M')
+assert.equal(goldStress.portfolioLoss, 0, 'portfolioLoss remains 0 on safe haven net gain')
+assert.ok(Math.abs(goldStress.stressedAssets - 21_500_000) < 0.01, 'stressedAssets gains +1.5M via positive portfolioDelta')
+assert.ok(Math.abs(goldStress.stressedNetWorth - (21_500_000 - 5_000_000)) < 0.01, 'stressedNetWorth accurately reflects safe haven gain')
+
 console.log('scripts/checks/check-aggregate.ts: all quantitative checks passed!')
 ```
 
 ---
 
-**Total baris 12 file: 4,560.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
+**Total baris 14 file: 4,867.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.

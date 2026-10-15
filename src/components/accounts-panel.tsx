@@ -54,6 +54,8 @@ export function AccountsPanel({
     if (res.error) {
       setError(res.error)
     } else {
+      if (fromAcc === name) setFromAcc('')
+      if (toAcc === name) setToAcc('')
       router.refresh()
     }
   }

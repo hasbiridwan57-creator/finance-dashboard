@@ -57,7 +57,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   const [txRes, holdRes, accRes] = await Promise.all([
     supabase
       .from('transactions')
-      .select('amount, type, date, categories(name)')
+      .select('amount, type, date, description, categories(name)')
       .order('date', { ascending: false }),
     supabase
       .from('holdings')
@@ -72,14 +72,23 @@ export async function getDashboardData(): Promise<DashboardData> {
   // Any read failure falls back rather than rendering an empty dashboard.
   if (txRes.error || holdRes.error || accRes.error) return demoData(user?.email ?? null)
 
-  const transactions: Tx[] = (txRes.data ?? []).map((r) => ({
-    amount: Number(r.amount),
-    type: r.type as Tx['type'],
-    // PostgREST returns the joined row as an object (or array, depending on the
-    // relationship it infers) — accept both shapes.
-    category: (Array.isArray(r.categories) ? r.categories[0]?.name : (r.categories as { name: string } | null)?.name) ?? 'Lainnya',
-    date: r.date as string,
-  }))
+  const transactions: Tx[] = (txRes.data ?? []).map((r) => {
+    const rawCategory = (Array.isArray(r.categories) ? r.categories[0]?.name : (r.categories as { name: string } | null)?.name) ?? null
+    const desc = typeof r.description === 'string' ? r.description : ''
+    let category = rawCategory
+    if (!category || category === 'Lainnya') {
+      if (/dividen|kupon/i.test(desc)) category = 'Dividen & Kupon'
+      else if (/bunga|yield/i.test(desc)) category = 'Bunga & Yield'
+      else category = rawCategory ?? 'Lainnya'
+    }
+    return {
+      amount: Number(r.amount),
+      type: r.type as Tx['type'],
+      category,
+      date: r.date as string,
+      description: desc,
+    }
+  })
 
   const holdings: Holding[] = (holdRes.data ?? []).map((h) => ({
     id: h.id,
@@ -108,7 +117,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       date: t.date,
       kind: 'transaction',
       label: t.category,
-      description: 'Transaksi',
+      description: t.description || 'Transaksi',
       amount: t.amount,
       tone: t.type === 'income' ? 'up' : 'down',
     })),

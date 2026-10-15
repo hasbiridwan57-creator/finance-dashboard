@@ -14,14 +14,16 @@ OUT = ROOT / "AUDIT_REPORT_FOR_GEMINI.md"
 
 FILES = [
     "src/lib/finance/aggregate.ts",
-    "src/app/actions.ts",
+    "src/lib/finance/data.ts",
     "src/lib/finance/prices.ts",
+    "src/app/api/prices/route.ts",
+    "src/app/actions.ts",
     "src/components/holdings-table.tsx",
     "src/components/auth-actions.tsx",
-    "src/components/nav.tsx",
-    "src/components/charts.tsx",
     "src/components/accounts-panel.tsx",
     "src/components/rebalance-stress-panel.tsx",
+    "src/components/nav.tsx",
+    "src/components/charts.tsx",
     "src/app/page.tsx",
     "src/app/auth/page.tsx",
     "scripts/checks/check-aggregate.ts",
@@ -121,6 +123,10 @@ A("| 25 | Optimistic UI & responsivitas pemilih periode (`nav.tsx`) | ✅ PASS (
 A("| 26 | Auto-bootstrap akun default saat transaksi pertama (`actions.ts`, `auth-actions.tsx`) | ✅ PASS (POLISH) | Mencegah error 'Akun tidak ditemukan' pada user pendaftar baru yang tabel akunnya masih kosong di Supabase dengan auto-insert akun default ('BCA') saat simpan transaksi pertama. |")
 A("| 27 | Rebranding konsisten 'Wealth & Risk Terminal' (`auth/page.tsx`, `layout.tsx`) | ✅ PASS (POLISH) | Menyeragamkan judul dan identitas aplikasi di halaman login, metadata title, dan sidebar/header. |")
 A("| 28 | Penempatan prioritas portofolio nomor 1 & migrasi Vercel (`portfolio-site`) | ✅ PASS (POLISH) | Memindahkan project Wealth & Portfolio Risk Management Terminal ke index 0 (paling atas) di array portofolio dan men-deploy ke Vercel production (`portfolio-site-xi-swart-28.vercel.app`). |")
+A("| 29 | Penutupan celah silent-failure kategori passive income (`actions.ts`, `data.ts`, `aggregate.ts`) | ✅ PASS (FINAL POLISH 2) | `addTransaction` menyematkan tag `[Kategori]` ke deskripsi bila kategori tidak ada di tabel `categories`; `data.ts` mengambil kolom `description` dan memulihkan kategori dari regex `/dividen|kupon/i` & `/bunga|yield/i`; `passiveIncomeMetrics` memfilter via kategori MAUPUN deskripsi. |")
+A("| 30 | Kalkulasi hedging / safe-haven di `stressTestPortfolio` (`aggregate.ts`) | ✅ PASS (FINAL POLISH 2) | Memakai `portfolioDelta = stressedPortfolio - basePortfolio` sehingga `stressedAssets = Math.max(0, worth.assets + portfolioDelta)`. Kenaikan aset safe-haven (mis. emas +5% di Crypto Winter) kini ikut terhitung, bukan diabaikan. |")
+A("| 31 | Integrasi harga emas live ke endpoint `/api/prices` (`route.ts`) | ✅ PASS (FINAL POLISH 2) | Import `fetchGoldPerGram` + `GOLD_SYMBOLS` (12 alias). Fitur \"Beli via Nominal (Rp)\" kini mengenali simbol emas sebelum jatuh ke jalur saham `.JK` / Binance. |")
+A("| 32 | Sinkronisasi state dropdown akun (`auth-actions.tsx`, `accounts-panel.tsx`) | ✅ PASS (FINAL POLISH 2) | `handleSubmit` memvalidasi `validAccount` terhadap `accountNames` terkini; `<select>` memakai nilai ternormalisasi; `handleDelete` mereset `fromAcc`/`toAcc` bila akun yang dipilih terhapus — mencegah state stale. |")
 A("")
 A("### Catatan temuan (jujur)")
 A("- **Instruksi menyebut tabel 8 kolom; riil 9 kolom.** Setelah kolom *Bobot* disisipkan, header menjadi 9 `<th>`. `colSpan` diset **9** — mengikuti struktur riil, bukan angka di instruksi. Kalau dipaksa 8, baris Edit/Sell akan menyisakan celah 1 kolom.")

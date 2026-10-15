@@ -50,13 +50,14 @@ export function AddTransactionButton({
     setError(null)
     setLoading(true)
 
+    const validAccount = accountNames.includes(account) ? account : (accountNames[0] || 'BCA')
     const res = await addTransaction({
       amount: Number(amount),
       type,
       category,
       description: description || category,
       date,
-      account,
+      account: validAccount,
     })
 
     setLoading(false)
@@ -193,7 +194,7 @@ export function AddTransactionButton({
                     Akun
                   </label>
                   <select
-                    value={account}
+                    value={accountNames.includes(account) ? account : (accountNames[0] || 'BCA')}
                     onChange={(e) => setAccount(e.target.value)}
                     className="w-full cursor-pointer rounded-lg border border-white/[.08] bg-[#0e1015] px-3 py-2.5 text-sm text-white outline-none transition-colors focus:border-emerald-500/40"
                   >

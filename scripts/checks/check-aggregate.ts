@@ -199,5 +199,33 @@ assert.equal(topUpCrypto.topUpBuy, 0, '0 freshCash goes to overweight crypto')
 const zeroTopUp = topUpAllocation(port.byClass, port.value, 0)
 assert.ok(zeroTopUp.every((d) => d.topUpBuy === 0))
 
+// --- FINAL POLISH (BAGIAN 5 TESTS) ---
+// 1. Uji passiveIncomeMetrics ketika kategori 'Lainnya' tetapi description '[Dividen & Kupon] Dividen interim BBCA'
+const descPassiveTxs: Tx[] = [
+  ...txs,
+  {
+    amount: 750_000,
+    type: 'income',
+    category: 'Lainnya',
+    description: '[Dividen & Kupon] Dividen interim BBCA',
+    date: '2026-02-20',
+  },
+]
+const descPassive = passiveIncomeMetrics(descPassiveTxs, 2_150_000)
+assert.equal(descPassive.totalPassiveIncome, 750_000, 'detected passive income via description tag')
+assert.equal(descPassive.latestMonthPassive, 750_000, 'detected latest month passive via description tag')
+
+// 2. Uji stressTestPortfolio skenario safe-haven positif (10g emas @ 1.5jt = 15jt, shock gold: +10%)
+const goldHolding: Holding[] = [
+  { symbol: 'EMAS', name: 'Logam Mulia', asset_class: 'gold', quantity: 10, avg_buy_price: 1_000_000, current_price: 1_500_000 },
+]
+const initialWorth = { assets: 20_000_000, debts: 5_000_000, net: 15_000_000 }
+const goldStress = stressTestPortfolio(goldHolding, initialWorth, { gold: 10 })
+assert.equal(goldStress.basePortfolio, 15_000_000, 'base portfolio is 15M')
+assert.ok(Math.abs(goldStress.stressedPortfolio - 16_500_000) < 0.01, 'stressed portfolio increases +10% to 16.5M')
+assert.equal(goldStress.portfolioLoss, 0, 'portfolioLoss remains 0 on safe haven net gain')
+assert.ok(Math.abs(goldStress.stressedAssets - 21_500_000) < 0.01, 'stressedAssets gains +1.5M via positive portfolioDelta')
+assert.ok(Math.abs(goldStress.stressedNetWorth - (21_500_000 - 5_000_000)) < 0.01, 'stressedNetWorth accurately reflects safe haven gain')
+
 console.log('scripts/checks/check-aggregate.ts: all quantitative checks passed!')
 
