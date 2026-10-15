@@ -138,15 +138,15 @@ Exit code: **0**
 ✓ Running next.config.ts took 70ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 736ms
+✓ Compiled successfully in 646ms
   Running TypeScript ...
-  Finished TypeScript in 862ms ...
+  Finished TypeScript in 839ms ...
   Collecting page data using 7 workers ...
   Generating static pages using 7 workers (0/7) ...
   Generating static pages using 7 workers (1/7) 
   Generating static pages using 7 workers (3/7) 
   Generating static pages using 7 workers (5/7) 
-✓ Generating static pages using 7 workers (7/7) in 111ms
+✓ Generating static pages using 7 workers (7/7) in 116ms
   Finalizing page optimization ...
 
 Route (app)
@@ -173,7 +173,47 @@ Route (app)
 
 ---
 
-## BAGIAN B — Self-Audit Checklist
+## BAGIAN B — Arsitektur Sistem, Mesin Kuantitatif, dan Rekapitulasi Hulu ke Hilir
+
+### B.1 Ringkasan Proyek & Identitas Arsitektur
+- **Nama Proyek:** Wealth & Portfolio Risk Management Terminal (`finance-dashboard`)
+- **Target Pengguna & Persona:** Hasbi Ridwan (Builder + Auditor), institusional & investor kuantitatif ritel
+- **Teknologi Utama:** Next.js 16.3.6 (App Router + Turbopack), TypeScript (Strict), Tailwind CSS v4, Supabase (PostgreSQL + RLS + Server Client `@supabase/ssr`), Vercel (Production Serverless)
+- **URL Live Production:** `https://finance-dashboard-hasbi.vercel.app`
+- **URL Portofolio Website:** `https://portfolio-site-xi-swart-28.vercel.app` (Wealth Terminal diposisikan nomor #1)
+
+### B.2 Katalog Lengkap 16 Fungsi Mesin Kuantitatif (`src/lib/finance/aggregate.ts`)
+Seluruh kalkulasi kuantitatif diisolasi sebagai *pure functions* tanpa dependensi database/React, aman dari pembagian nol (zero-division guard), dan dapat diuji secara independen:
+1. `monthlyCashflow(txs)`: Agregasi arus kas bulanan (pemasukan vs pengeluaran) tertata secara kronologis.
+2. `expenseByCategory(txs)`: Pemecahan beban pengeluaran per kategori terurut dari yang terbesar.
+3. `portfolioSummary(holdings)`: Valuasi total portofolio, akumulasi cost basis, total unrealized P/L, dan breakdown per kelas aset.
+4. `netWorth(accounts, portfolioValue)`: Kalkulasi kekayaan bersih murni (total kas/bank + nilai pasar portofolio - total kewajiban utang). Akun bertipe `investment` sengaja diabaikan untuk mencegah penggelembungan ganda (*double counting*).
+5. `latestDelta(buckets)`: Menghitung persentase perubahan pengeluaran dan pemasukan bulan berjalan vs bulan sebelumnya.
+6. `avgMonthlyExpense(buckets)`: Menghitung rata-rata pengeluaran bulanan sebagai baseline *burn rate*.
+7. `financialRatios(worth, liquidCash, portfolioValue, buckets)`: Menghitung 5 rasio kesehatan finansial utama: *Savings Rate* (%), *Emergency Runway* (bulan), *Debt-to-Asset* (%), *Liquidity Ratio* (%), dan *Investment Allocation* (%).
+8. `portfolioRiskMetrics(holdings)`: Menganalisis diversifikasi portofolio menggunakan Herfindahl-Hirschman Index (HHI) dan mendeteksi aset terkonsentrasi di atas 25%.
+9. `rebalanceDrift(byClass, totalValue, targetPreset)`: Menghitung deviasi alokasi aset riil terhadap target profil risiko (Konservatif, Seimbang, Agresif) dan menentukan besaran aksi beli/jual per kelas aset.
+10. `passiveIncomeMetrics(txs, burnRate)`: Mengagregasi pemasukan pasif (Dividen, Kupon, Bunga, Yield) dan menghitung rasio kecukupan biaya hidup (*Coverage Ratio* %).
+11. `stressTestPortfolio(holdings, worth, shocks)`: Simulasi skenario krisis pasar ekstrem (Market Crash -30%, Crypto Winter -40%, Stagflation) dengan memperhitungkan lindung nilai (*safe-haven hedge*) pada komoditas emas.
+12. `topUpAllocation(byClass, totalValue, topUpAmount, targetPreset)`: Menghitung distribusi dana segar (*fresh cash*) optimal yang hanya disalurkan ke kelas aset yang *underweight* tanpa memicu penjualan aset lain.
+13. `calculateDivestmentNet(assetClass, qty, sellPrice, avgBuyPrice)`: Engine perhitungan pajak & komisi broker saat divestasi di pasar modal Indonesia (Saham BEI: Komisi Broker 0,15% + PPh Final 0,10% = 0,25%; Kripto: PPh+PPN 0,22%; Emas: PPh 22 Buyback 0,25%; SBN/Reksadana: 0%).
+14. `benchmarkAndAlphaMetrics(holdings, ihsgReturnPct, riskFreeRatePct)`: Menghitung kinerja portofolio relatif terhadap return IHSG YTD (Jensen's Alpha $\alpha$), kelebihan return terhadap instrumen bebas risiko SBN 6,25%, estimasi volatilitas tertimbang, dan Sharpe Ratio.
+15. `tradingJournalMetrics(trades)`: Evaluasi statistik trading kuantitatif: Win Rate (%), Rasio Untung/Rugi (*Profit Factor*), Ekspektasi Matematis per Trade (*Expectancy*), dan Penurunan Puncak Ekuitas (*Max Drawdown*).
+16. `calculateAcquisitionCost(assetClass, qty, buyPrice)`: Engine simetris biaya beli yang memperhitungkan *broker buy fee* (0,15% saham, 0,11% kripto), total dana tunai yang keluar (*cash outflow*), dan harga beli rata-rata efektif per unit.
+
+### B.3 Struktur Database & Keamanan (Supabase PostgreSQL)
+- **Tabel `accounts`:** Menyimpan akun kas, rekening bank, e-wallet, dan pos utang. RLS aktif (`user_id = auth.uid()`). Dilindungi stored procedure `bump_account_balance` untuk mutasi saldo atomik.
+- **Tabel `transactions`:** Riwayat transaksi pemasukan dan pengeluaran dengan relasi foreign key ke `categories` dan `accounts`.
+- **Tabel `holdings`:** Portofolio instrumen investasi aktif (Saham, Kripto, Emas, Obligasi, Reksa Dana) dengan pelacakan harga beli rata-rata (*average buy price*) dan harga pasar terkini (*current price*).
+- **Penyimpanan Trading Journal:** Didukung oleh penyimpanan lokal interaktif browser (`localStorage` via `useSyncExternalStore`) pada mode sandbox Vercel serverless, serta sinkronisasi file ledger (`paper_trade_ledger.jsonl`) pada lingkungan lokal.
+
+### B.4 Arsitektur API Endpoint
+- `GET /api/prices?symbol=...`: Endpoint resolusi harga multi-aset live. Mendukung deteksi otomatis emas fisik lokal (COMEX `GC=F` x `USDIDR=X`), obligasi ritel negara (`ORI`, `SR`, `FR`, `PBS` par value Rp 1.000.000), saham IDX (`.JK`), dan pasangan kripto IDR (Binance / CoinGecko).
+- `GET /api/smt`: Endpoint pembacaan jurnal eksekusi trading kuantitatif. Mengembalikan riwayat transaksi pasar modal dengan fallback dataset deterministik.
+
+---
+
+## BAGIAN C — Self-Audit Checklist (44 Checkpoints)
 
 | # | Item | Status | Bukti |
 |---|------|--------|-------|
@@ -224,9 +264,9 @@ Route (app)
 
 ---
 
-## BAGIAN C — Source Code Lengkap (19 file)
+## BAGIAN D — Source Code Lengkap (19 file)
 
-### C.1 `src/lib/finance/aggregate.ts`
+### D.1 `src/lib/finance/aggregate.ts`
 
 _580 baris · 16,201 karakter_
 
@@ -813,7 +853,7 @@ export function calculateAcquisitionCost(
 }
 ```
 
-### C.2 `src/lib/finance/data.ts`
+### D.2 `src/lib/finance/data.ts`
 
 _273 baris · 10,356 karakter_
 
@@ -1093,7 +1133,7 @@ export async function getSmtTrades(): Promise<TradeEntry[]> {
 }
 ```
 
-### C.3 `src/lib/finance/prices.ts`
+### D.3 `src/lib/finance/prices.ts`
 
 _288 baris · 9,565 karakter_
 
@@ -1388,7 +1428,7 @@ export async function fetchIhsgReturnYtd(): Promise<number> {
 }
 ```
 
-### C.4 `src/app/api/prices/route.ts`
+### D.4 `src/app/api/prices/route.ts`
 
 _55 baris · 2,046 karakter_
 
@@ -1450,7 +1490,7 @@ export async function GET(request: Request) {
 }
 ```
 
-### C.5 `src/app/api/smt/route.ts`
+### D.5 `src/app/api/smt/route.ts`
 
 _7 baris · 237 karakter_
 
@@ -1464,7 +1504,7 @@ export async function GET() {
 }
 ```
 
-### C.6 `src/app/actions.ts`
+### D.6 `src/app/actions.ts`
 
 _733 baris · 22,345 karakter_
 
@@ -2204,7 +2244,7 @@ export async function deleteTradeEntry(id: string) {
 }
 ```
 
-### C.7 `src/components/holdings-table.tsx`
+### D.7 `src/components/holdings-table.tsx`
 
 _473 baris · 18,764 karakter_
 
@@ -2684,7 +2724,7 @@ function SellRow({
 }
 ```
 
-### C.8 `src/components/auth-actions.tsx`
+### D.8 `src/components/auth-actions.tsx`
 
 _991 baris · 39,511 karakter_
 
@@ -3682,7 +3722,7 @@ ANTM,Aneka Tambang,gold,100,15000`}
 }
 ```
 
-### C.9 `src/components/accounts-panel.tsx`
+### D.9 `src/components/accounts-panel.tsx`
 
 _250 baris · 9,770 karakter_
 
@@ -3939,7 +3979,7 @@ export function AccountsPanel({
 }
 ```
 
-### C.10 `src/components/rebalance-stress-panel.tsx`
+### D.10 `src/components/rebalance-stress-panel.tsx`
 
 _328 baris · 14,079 karakter_
 
@@ -4274,7 +4314,7 @@ export function RebalanceStressPanel({
 }
 ```
 
-### C.11 `src/components/smt-journal-panel.tsx`
+### D.11 `src/components/smt-journal-panel.tsx`
 
 _429 baris · 17,328 karakter_
 
@@ -4710,7 +4750,7 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
 }
 ```
 
-### C.12 `src/components/export-report-button.tsx`
+### D.12 `src/components/export-report-button.tsx`
 
 _21 baris · 716 karakter_
 
@@ -4738,7 +4778,7 @@ export function ExportReportButton() {
 }
 ```
 
-### C.13 `src/components/nav.tsx`
+### D.13 `src/components/nav.tsx`
 
 _148 baris · 4,961 karakter_
 
@@ -4893,7 +4933,7 @@ export function PeriodToggle() {
 }
 ```
 
-### C.14 `src/components/charts.tsx`
+### D.14 `src/components/charts.tsx`
 
 _373 baris · 10,533 karakter_
 
@@ -5273,7 +5313,7 @@ export function Sparkline({ values }: { values: number[] }) {
 }
 ```
 
-### C.15 `src/app/page.tsx`
+### D.15 `src/app/page.tsx`
 
 _543 baris · 23,988 karakter_
 
@@ -5823,7 +5863,7 @@ function RecentActivity({ activity }: { activity: ActivityEvent[] }) {
 }
 ```
 
-### C.16 `src/app/layout.tsx`
+### D.16 `src/app/layout.tsx`
 
 _22 baris · 789 karakter_
 
@@ -5852,7 +5892,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
 }
 ```
 
-### C.17 `src/app/globals.css`
+### D.17 `src/app/globals.css`
 
 _198 baris · 4,759 karakter_
 
@@ -6057,7 +6097,7 @@ body::before {
 }
 ```
 
-### C.18 `scripts/checks/check-aggregate.ts`
+### D.18 `scripts/checks/check-aggregate.ts`
 
 _304 baris · 15,396 karakter_
 
@@ -6367,7 +6407,7 @@ assert.equal(buyCrypto.buyFee, 1_100_000) // 0.11%
 console.log('scripts/checks/check-aggregate.ts: all quantitative checks passed!')
 ```
 
-### C.19 `scripts/verify-engine-proof.ts`
+### D.19 `scripts/verify-engine-proof.ts`
 
 _296 baris · 12,490 karakter_
 
