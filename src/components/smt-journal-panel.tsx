@@ -127,7 +127,17 @@ export function SmtJournalPanel({ trades }: { trades: TradeEntry[] }) {
                   <td className="whitespace-nowrap px-4 py-3 text-right font-mono font-semibold tabular-nums">
                     <span className={isWin ? 'text-emerald-400' : 'text-orange-400'}>
                       {formatPct(
-                        t.entryPrice > 0 ? ((t.exitPrice - t.entryPrice) / t.entryPrice) * 100 : 0,
+                        (() => {
+                          const invested = t.entryPrice * t.quantity
+                          if (invested > 0) return (t.pnl / invested) * 100
+                          if (t.entryPrice > 0) {
+                            const diff = (t.side === 'SHORT' || t.side === 'SELL')
+                              ? t.entryPrice - t.exitPrice
+                              : t.exitPrice - t.entryPrice
+                            return (diff / t.entryPrice) * 100
+                          }
+                          return 0
+                        })()
                       )}{' '}
                       ({formatIDR(t.pnl, { compact: true })})
                     </span>

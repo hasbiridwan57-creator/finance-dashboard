@@ -413,6 +413,18 @@ export function benchmarkAndAlphaMetrics(
   riskFreeRatePct: number = 6.25
 ) {
   const summary = portfolioSummary(holdings)
+  if (summary.value <= 0 || summary.cost <= 0) {
+    return {
+      portfolioReturnPct: 0,
+      ihsgReturnPct,
+      riskFreeRatePct,
+      alphaVsIhsgPct: 0,
+      excessVsRiskFreePct: 0,
+      estimatedVolatilityPct: 0,
+      sharpeRatio: 0,
+      status: 'UNDERPERFORM' as const,
+    }
+  }
   const portfolioReturnPct = summary.plPct
   const alphaVsIhsgPct = portfolioReturnPct - ihsgReturnPct
   const excessVsRiskFreePct = portfolioReturnPct - riskFreeRatePct

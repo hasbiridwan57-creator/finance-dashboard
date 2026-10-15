@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { fetchGoldPerGram } from '@/lib/finance/prices'
 
-const GOLD_SYMBOLS = new Set(['EMAS', 'GOLD', 'ANTM', 'UBS', 'XAU', 'XAUUSD', 'XAUIDR', 'LOGAMMULIA', 'DIGITALGOLD', 'GALERI24', 'LOGAM24', 'PEGADAIAN', 'EMASDIGITAL'])
+const GOLD_SYMBOLS = new Set(['EMAS', 'GOLD', 'ANTAM', 'UBS', 'XAU', 'XAUUSD', 'XAUIDR', 'LOGAMMULIA', 'DIGITALGOLD', 'GALERI24', 'LOGAM24', 'PEGADAIAN', 'EMASDIGITAL'])
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     }
 
     // 1. Automatic Gold Price (IDR per gram) from Yahoo Finance GC=F & USDIDR=X
-    if (['EMAS', 'GOLD', 'ANTM', 'UBS', 'XAU'].includes(symbol)) {
+    if (['EMAS', 'GOLD', 'ANTAM', 'UBS', 'XAU'].includes(symbol)) {
       const [goldRes, fxRes] = await Promise.all([
         fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=1d', {
           headers: { 'User-Agent': 'Mozilla/5.0' },
