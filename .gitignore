@@ -43,3 +43,7 @@ next-env.d.ts
 
 # Local Netlify folder
 .netlify
+
+# temporary audit reports (deliverables only, not source)
+AUDIT_REPORT_FOR_GEMINI*.md
+/audit-reports/
