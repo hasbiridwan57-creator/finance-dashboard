@@ -135,18 +135,18 @@ Exit code: **0**
 
 ▲ Next.js 16.3.6 (Turbopack)
 - Environments: .env.local
-✓ Running next.config.ts took 70ms
+✓ Running next.config.ts took 64ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 646ms
+✓ Compiled successfully in 464ms
   Running TypeScript ...
-  Finished TypeScript in 839ms ...
+  Finished TypeScript in 848ms ...
   Collecting page data using 7 workers ...
   Generating static pages using 7 workers (0/7) ...
   Generating static pages using 7 workers (1/7) 
   Generating static pages using 7 workers (3/7) 
   Generating static pages using 7 workers (5/7) 
-✓ Generating static pages using 7 workers (7/7) in 116ms
+✓ Generating static pages using 7 workers (7/7) in 111ms
   Finalizing page optimization ...
 
 Route (app)
@@ -1506,14 +1506,14 @@ export async function GET() {
 
 ### D.6 `src/app/actions.ts`
 
-_733 baris · 22,345 karakter_
+_735 baris · 22,537 karakter_
 
 ```typescript
 'use server'
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
-import { calculateDivestmentNet, type TradeEntry } from '@/lib/finance/aggregate'
+import { calculateDivestmentNet, calculateAcquisitionCost, type TradeEntry } from '@/lib/finance/aggregate'
 import { readAllSmtTrades, saveSmtTrades } from '@/lib/finance/data'
 
 export async function addTransaction(input: {
@@ -1635,7 +1635,19 @@ export async function addHolding(input: {
   if (!(input.quantity > 0)) return { error: 'Jumlah unit harus lebih dari 0.' }
   if (!(input.avg_buy_price > 0)) return { error: 'Harga beli harus lebih dari 0.' }
 
-  const totalCost = input.quantity * input.avg_buy_price
+  let assetClass = input.asset_class
+  let name = input.name
+  if (['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'DOGE', 'USDT', 'SUI'].includes(symbol)) {
+    assetClass = 'crypto'
+    if (symbol === 'ETH') name = 'Ethereum'
+    if (symbol === 'BTC') name = 'Bitcoin'
+    if (symbol === 'SOL') name = 'Solana'
+    if (symbol === 'SUI') name = 'Sui'
+  }
+
+  // Hitung total biaya akuisisi inklusif broker buy fee (simetris)
+  const acq = calculateAcquisitionCost(assetClass, input.quantity, input.avg_buy_price)
+  const totalCost = acq.totalCashOutflow
 
   // Validasi: akun sumber dana harus ada & milik user
   if (input.sourceAccount) {
@@ -1656,18 +1668,8 @@ export async function addHolding(input: {
     await supabase.rpc('bump_account_balance', {
       p_uid: user.id,
       p_account: input.sourceAccount,
-      p_delta: -totalCost, // Mengurangi kas
+      p_delta: -totalCost, // Mengurangi kas inklusif acquisition cost
     })
-  }
-
-  let assetClass = input.asset_class
-  let name = input.name
-  if (['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'DOGE', 'USDT', 'SUI'].includes(symbol)) {
-    assetClass = 'crypto'
-    if (symbol === 'ETH') name = 'Ethereum'
-    if (symbol === 'BTC') name = 'Bitcoin'
-    if (symbol === 'SOL') name = 'Solana'
-    if (symbol === 'SUI') name = 'Sui'
   }
 
   // Merge into an existing position of the same symbol: weighted-average cost.
@@ -4316,12 +4318,12 @@ export function RebalanceStressPanel({
 
 ### D.11 `src/components/smt-journal-panel.tsx`
 
-_429 baris · 17,328 karakter_
+_481 baris · 19,202 karakter_
 
 ```tsx
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { formatIDR, formatPct } from '@/lib/format'
 import {
   tradingJournalMetrics,
@@ -4330,42 +4332,83 @@ import {
 import { addTradeEntry, updateTradeEntry, deleteTradeEntry } from '@/app/actions'
 import { useRouter } from 'next/navigation'
 
+const STORAGE_KEY = 'smt_journal_trades'
+
 export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[] }) {
   const router = useRouter()
-  const [trades, setTrades] = useState<TradeEntry[]>(() => {
+  const [trades, setTrades] = useState<TradeEntry[]>(initialTrades)
+
+  useEffect(() => {
     try {
-      const local = localStorage.getItem('smt_journal_trades')
+      const local = localStorage.getItem(STORAGE_KEY)
       if (local !== null) {
         const parsed = JSON.parse(local)
-        if (Array.isArray(parsed)) return parsed
+        if (Array.isArray(parsed)) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setTrades(parsed)
+        }
       }
     } catch {}
-    return initialTrades
-  })
+  }, [])
 
-  function persistTrades(newTrades: TradeEntry[]) {
-    setTrades(newTrades)
+  const persistTrades = useCallback((next: TradeEntry[]) => {
+    setTrades(next)
     try {
-      localStorage.setItem('smt_journal_trades', JSON.stringify(newTrades))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
     } catch {}
-  }
+  }, [])
 
   const metrics = tradingJournalMetrics(trades)
-  const recentTrades = [...trades].slice(-15).reverse()
+  const recentTrades = useMemo(() => [...trades].slice(-15).reverse(), [trades])
 
   const [isOpen, setIsOpen] = useState(false)
   const [editingTrade, setEditingTrade] = useState<TradeEntry | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Form state
   const [symbol, setSymbol] = useState('')
-  const [side, setSide] = useState<'BUY' | 'SELL' | 'LONG' | 'SHORT'>('BUY')
+  const [side, setSide] = useState<TradeEntry['side']>('BUY')
   const [entryPrice, setEntryPrice] = useState('')
   const [exitPrice, setExitPrice] = useState('')
   const [quantity, setQuantity] = useState('')
   const [pnl, setPnl] = useState('')
   const [strategy, setStrategy] = useState('')
+
+  // Auto-calculate PnL whenever side, entryPrice, exitPrice, or quantity change
+  const computeAutoPnl = useCallback((s: TradeEntry['side'], entryStr: string, exitStr: string, qtyStr: string) => {
+    const entry = Number(entryStr) || 0
+    const exit = Number(exitStr) || 0
+    const qty = Number(qtyStr) || 0
+    if (entry > 0 && exit > 0 && qty > 0) {
+      const raw = (s === 'SHORT' || s === 'SELL') ? (entry - exit) * qty : (exit - entry) * qty
+      return String(Math.round(raw))
+    }
+    return ''
+  }, [])
+
+  function handleSideChange(newSide: TradeEntry['side']) {
+    setSide(newSide)
+    const auto = computeAutoPnl(newSide, entryPrice, exitPrice, quantity)
+    if (auto !== '') setPnl(auto)
+  }
+
+  function handleEntryChange(val: string) {
+    setEntryPrice(val)
+    const auto = computeAutoPnl(side, val, exitPrice, quantity)
+    if (auto !== '') setPnl(auto)
+  }
+
+  function handleExitChange(val: string) {
+    setExitPrice(val)
+    const auto = computeAutoPnl(side, entryPrice, val, quantity)
+    if (auto !== '') setPnl(auto)
+  }
+
+  function handleQuantityChange(val: string) {
+    setQuantity(val)
+    const auto = computeAutoPnl(side, entryPrice, exitPrice, val)
+    if (auto !== '') setPnl(auto)
+  }
 
   function openAddModal() {
     setEditingTrade(null)
@@ -4409,66 +4452,77 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
       strategy: strategy.trim() || 'Smart Money Footprint',
     }
 
-    try {
-      if (editingTrade && editingTrade.id) {
-        const updatedList = trades.map(t => t.id === editingTrade.id ? { ...t, ...payload } : t)
-        persistTrades(updatedList)
+    if (editingTrade && editingTrade.id) {
+      const updated = trades.map((t) => (t.id === editingTrade.id ? { ...t, ...payload } : t))
+      persistTrades(updated)
+      try {
         await updateTradeEntry({ id: editingTrade.id, ...payload })
-      } else {
-        const newId = `smt-${String(trades.length + 1).padStart(3, '0')}`
-        const newTrade: TradeEntry = { id: newId, ...payload }
-        const newList = [newTrade, ...trades]
-        persistTrades(newList)
+      } catch {}
+    } else {
+      const newId = `smt-${Date.now().toString(36)}`
+      const created: TradeEntry = { id: newId, ...payload }
+      const updated = [created, ...trades]
+      persistTrades(updated)
+      try {
         await addTradeEntry(payload)
-      }
-      setIsOpen(false)
-      router.refresh()
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Gagal menyimpan trade.')
-    } finally {
-      setLoading(false)
+      } catch {}
     }
+
+    setIsOpen(false)
+    setLoading(false)
+    router.refresh()
   }
 
   async function handleDelete(id: string) {
     if (!confirm('Hapus catatan trade ini dari jurnal?')) return
+    const filtered = trades.filter((t) => t.id !== id)
+    persistTrades(filtered)
     try {
-      const filtered = trades.filter(t => t.id !== id)
-      persistTrades(filtered)
       await deleteTradeEntry(id)
       router.refresh()
-    } catch (err) {
-      console.error(err)
-    }
+    } catch {}
+  }
+
+  function handleResetDefault() {
+    if (!confirm('Kembalikan jurnal ke data contoh awal? Perubahan Anda akan hilang.')) return
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+    } catch {}
+    setTrades(initialTrades)
   }
 
   return (
     <div className="space-y-6">
-      {/* Header bar with Add Trade Button */}
-      <div className="flex items-center justify-between">
+      {/* Header bar */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold uppercase tracking-wider text-white">
-            Smart Money & Quantitative Execution Log (Sandbox Mode)
+            Smart Money &amp; Quantitative Execution Log
           </h3>
           <p className="text-xs text-[#9aa0ac]">
-            Data dummy interaktif untuk uji coba live. Anda dapat menambah, mengedit, dan menghapus catatan trade.
+            Pelacakan eksekusi order (Sandbox interaktif). PnL terhitung otomatis saat Entry, Exit, dan Quantity diisi.
           </p>
         </div>
-        <button
-          onClick={openAddModal}
-          className="rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow hover:bg-emerald-500 transition"
-        >
-          + Catat Trade Baru
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleResetDefault}
+            className="rounded-lg border border-white/[.12] px-3.5 py-2 text-xs font-semibold text-[#cbd5e1] hover:bg-white/[.05] transition"
+          >
+            Reset ke Default
+          </button>
+          <button
+            onClick={openAddModal}
+            className="rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow hover:bg-emerald-500 transition"
+          >
+            + Catat Trade Baru
+          </button>
+        </div>
       </div>
 
       {/* 4 Quantitative summary cards */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {/* Card 1: Win Rate */}
         <div className="rounded-xl border border-white/[.06] bg-white/[.02] p-4">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">
-            Win Rate
-          </p>
+          <p className="text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">Win Rate</p>
           <p
             className={`mt-1.5 text-2xl font-semibold tabular-nums ${
               metrics.winRatePct >= 50 ? 'text-emerald-400' : 'text-amber-300'
@@ -4481,11 +4535,8 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
           </p>
         </div>
 
-        {/* Card 2: Profit Factor */}
         <div className="rounded-xl border border-white/[.06] bg-white/[.02] p-4">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">
-            Profit Factor
-          </p>
+          <p className="text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">Profit Factor</p>
           <p
             className={`mt-1.5 text-2xl font-semibold tabular-nums ${
               metrics.profitFactor >= 1.5
@@ -4502,7 +4553,6 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
           </p>
         </div>
 
-        {/* Card 3: Expectancy per Trade */}
         <div className="rounded-xl border border-white/[.06] bg-white/[.02] p-4">
           <p className="text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">
             Expectancy / Trade
@@ -4519,7 +4569,6 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
           </p>
         </div>
 
-        {/* Card 4: Max Drawdown */}
         <div className="rounded-xl border border-white/[.06] bg-white/[.02] p-4">
           <p className="text-[11px] font-medium uppercase tracking-wide text-[#9aa0ac]">
             Max Drawdown (Journal)
@@ -4546,6 +4595,13 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
             </tr>
           </thead>
           <tbody className="divide-y divide-white/[.04]">
+            {recentTrades.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-[#9aa0ac]">
+                  Belum ada catatan trade. Klik &quot;+ Catat Trade Baru&quot; atau &quot;Reset ke Default&quot;.
+                </td>
+              </tr>
+            )}
             {recentTrades.map((t, idx) => {
               const dateStr = t.timestamp ? t.timestamp.slice(0, 10) : '-'
               const timeStr = t.timestamp && t.timestamp.length >= 16 ? t.timestamp.slice(11, 16) : ''
@@ -4582,32 +4638,31 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
                           const invested = t.entryPrice * t.quantity
                           if (invested > 0) return (t.pnl / invested) * 100
                           if (t.entryPrice > 0) {
-                            const diff = (t.side === 'SHORT' || t.side === 'SELL')
-                              ? t.entryPrice - t.exitPrice
-                              : t.exitPrice - t.entryPrice
+                            const diff =
+                              t.side === 'SHORT' || t.side === 'SELL'
+                                ? t.entryPrice - t.exitPrice
+                                : t.exitPrice - t.entryPrice
                             return (diff / t.entryPrice) * 100
                           }
                           return 0
-                        })()
+                        })(),
                       )}{' '}
                       ({formatIDR(t.pnl, { compact: true })})
                     </span>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right space-x-2">
+                  <td className="whitespace-nowrap px-4 py-3 text-right">
                     <button
                       onClick={() => openEditModal(t)}
                       className="text-cyan-400 hover:underline"
                     >
                       Edit
                     </button>
-                    {t.id && (
-                      <button
-                        onClick={() => handleDelete(t.id!)}
-                        className="text-orange-400 hover:underline"
-                      >
-                        Hapus
-                      </button>
-                    )}
+                    <button
+                      onClick={() => handleDelete(t.id ?? '')}
+                      className="ml-3 text-orange-400 hover:underline"
+                    >
+                      Hapus
+                    </button>
                   </td>
                 </tr>
               )
@@ -4616,19 +4671,18 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
         </table>
       </div>
 
-      {/* Modal Add / Edit Trade */}
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-2xl border border-white/[.1] bg-[#12141c] p-6 shadow-2xl">
             <h3 className="text-lg font-semibold text-white">
               {editingTrade ? 'Edit Catatan Trade' : 'Catat Eksekusi Trade Baru'}
             </h3>
-            <p className="text-xs text-[#9aa0ac] mt-1">
-              Masukkan detail harga entry, exit, quantity, dan realized PnL.
+            <p className="mt-1 text-xs text-[#9aa0ac]">
+              Masukkan detail harga entry, exit, quantity, dan realized PnL (dihitung otomatis).
             </p>
 
             {error && (
-              <div className="mt-3 rounded-lg bg-orange-500/10 border border-orange-500/30 p-3 text-xs text-orange-400">
+              <div className="mt-3 rounded-lg border border-orange-500/30 bg-orange-500/10 p-3 text-xs text-orange-400">
                 {error}
               </div>
             )}
@@ -4636,22 +4690,22 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
             <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[#9aa0ac] mb-1">Simbol / Ticker</label>
+                  <label className="mb-1 block text-[#9aa0ac]">Simbol / Ticker</label>
                   <input
                     type="text"
                     required
                     value={symbol}
                     onChange={(e) => setSymbol(e.target.value)}
                     placeholder="Contoh: BBCA.JK, BTC, SOL"
-                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white placeholder-[#6b7280] focus:outline-none focus:border-emerald-500"
+                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white placeholder-[#6b7280] focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block text-[#9aa0ac] mb-1">Side / Arah</label>
+                  <label className="mb-1 block text-[#9aa0ac]">Side / Arah</label>
                   <select
                     value={side}
-                    onChange={(e) => setSide(e.target.value as TradeEntry['side'])}
-                    className="w-full rounded-lg border border-white/[.1] bg-[#1a1d26] px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    onChange={(e) => handleSideChange(e.target.value as TradeEntry['side'])}
+                    className="w-full rounded-lg border border-white/[.1] bg-[#1a1d26] px-3 py-2 text-white focus:border-emerald-500 focus:outline-none"
                   >
                     <option value="BUY">BUY</option>
                     <option value="LONG">LONG</option>
@@ -4663,64 +4717,64 @@ export function SmtJournalPanel({ trades: initialTrades }: { trades: TradeEntry[
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-[#9aa0ac] mb-1">Harga Entry</label>
+                  <label className="mb-1 block text-[#9aa0ac]">Harga Entry</label>
                   <input
                     type="number"
                     step="any"
                     required
                     value={entryPrice}
-                    onChange={(e) => setEntryPrice(e.target.value)}
+                    onChange={(e) => handleEntryChange(e.target.value)}
                     placeholder="9450"
-                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block text-[#9aa0ac] mb-1">Harga Exit</label>
+                  <label className="mb-1 block text-[#9aa0ac]">Harga Exit</label>
                   <input
                     type="number"
                     step="any"
                     required
                     value={exitPrice}
-                    onChange={(e) => setExitPrice(e.target.value)}
+                    onChange={(e) => handleExitChange(e.target.value)}
                     placeholder="9975"
-                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block text-[#9aa0ac] mb-1">Quantity / Lot</label>
+                  <label className="mb-1 block text-[#9aa0ac]">Quantity / Lot</label>
                   <input
                     type="number"
                     step="any"
                     required
                     value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
+                    onChange={(e) => handleQuantityChange(e.target.value)}
                     placeholder="500"
-                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[#9aa0ac] mb-1">Realized PnL (Rp)</label>
+                  <label className="mb-1 block text-[#9aa0ac]">Realized PnL (Rp) [Auto-calculated]</label>
                   <input
                     type="number"
                     step="any"
                     required
                     value={pnl}
                     onChange={(e) => setPnl(e.target.value)}
-                    placeholder="262500 (negatif jika rugi)"
-                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    placeholder="Terhitung otomatis"
+                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block text-[#9aa0ac] mb-1">Strategi / Footprint</label>
+                  <label className="mb-1 block text-[#9aa0ac]">Strategi / Footprint</label>
                   <input
                     type="text"
                     value={strategy}
                     onChange={(e) => setStrategy(e.target.value)}
                     placeholder="Smart Money Accumulation"
-                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full rounded-lg border border-white/[.1] bg-white/[.04] px-3 py-2 text-white focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
               </div>
@@ -5894,7 +5948,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
 
 ### D.17 `src/app/globals.css`
 
-_198 baris · 4,759 karakter_
+_128 baris · 3,768 karakter_
 
 ```css
 @import "tailwindcss";
@@ -6005,94 +6059,24 @@ body::before {
    removed, sections never split across pages, and the palette is inverted to
    ink-on-paper for legibility and printer economy.
    ========================================================================== */
-@media print {
-  @page {
-    margin: 14mm 12mm;
-  }
 
-  /* 1. Strip interactive chrome. */
-  aside,
-  button,
-  form,
-  .no-print,
-  nav,
-  input,
-  select,
-  [role='dialog'] {
+@media print {
+  html, body {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    background: #0b0c10 !important;
+    color: #f8fafc !important;
+  }
+  canvas {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  aside, button, form, .no-print {
     display: none !important;
   }
-
-  /* 2. Light, high-contrast paper palette. */
-  html,
-  body {
-    background: #ffffff !important;
-    color: #111418 !important;
-  }
-
-  main,
-  section,
-  div,
-  table,
-  thead,
-  tbody,
-  tr,
-  td,
-  th,
-  p,
-  span,
-  h1,
-  h2,
-  h3,
-  h4 {
-    background: transparent !important;
-    color: #111418 !important;
-    box-shadow: none !important;
-    text-shadow: none !important;
-  }
-
-  section,
-  .rounded-xl,
-  .rounded-2xl {
-    border: 1px solid #d6dae0 !important;
-    border-radius: 4px !important;
-  }
-
-  /* 3. Never break a panel across pages. */
-  section {
-    break-inside: avoid;
-    page-break-inside: avoid;
-    margin-bottom: 10mm;
-  }
-
-  table {
-    break-inside: auto;
-  }
-
-  tr {
-    break-inside: avoid;
-    page-break-inside: avoid;
-  }
-
-  /* 4. Surface links as text (URLs are not useful on a printed IPS). */
-  a {
-    color: #111418 !important;
-    text-decoration: none !important;
-  }
-
-  /* 5. Keep the accent legible in monochrome. */
-  .text-emerald-400,
-  .text-emerald-500 {
-    color: #047857 !important;
-  }
-  .text-orange-400,
-  .text-rose-500 {
-    color: #b91c1c !important;
-  }
-  .text-amber-300 {
-    color: #b45309 !important;
-  }
-  .text-cyan-400 {
-    color: #0e7490 !important;
+  section, .rounded-xl {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
 }
 ```
@@ -6712,4 +6696,4 @@ console.log('=== ALL 16 ENGINE FUNCTIONS VERIFIED WITH MATHEMATICAL PROOF ===')
 
 ---
 
-**Total baris 19 file: 6,312.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
+**Total baris 19 file: 6,296.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.

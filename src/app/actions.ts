@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
-import { calculateDivestmentNet, type TradeEntry } from '@/lib/finance/aggregate'
+import { calculateDivestmentNet, calculateAcquisitionCost, type TradeEntry } from '@/lib/finance/aggregate'
 import { readAllSmtTrades, saveSmtTrades } from '@/lib/finance/data'
 
 export async function addTransaction(input: {
@@ -124,7 +124,19 @@ export async function addHolding(input: {
   if (!(input.quantity > 0)) return { error: 'Jumlah unit harus lebih dari 0.' }
   if (!(input.avg_buy_price > 0)) return { error: 'Harga beli harus lebih dari 0.' }
 
-  const totalCost = input.quantity * input.avg_buy_price
+  let assetClass = input.asset_class
+  let name = input.name
+  if (['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'DOGE', 'USDT', 'SUI'].includes(symbol)) {
+    assetClass = 'crypto'
+    if (symbol === 'ETH') name = 'Ethereum'
+    if (symbol === 'BTC') name = 'Bitcoin'
+    if (symbol === 'SOL') name = 'Solana'
+    if (symbol === 'SUI') name = 'Sui'
+  }
+
+  // Hitung total biaya akuisisi inklusif broker buy fee (simetris)
+  const acq = calculateAcquisitionCost(assetClass, input.quantity, input.avg_buy_price)
+  const totalCost = acq.totalCashOutflow
 
   // Validasi: akun sumber dana harus ada & milik user
   if (input.sourceAccount) {
@@ -145,18 +157,8 @@ export async function addHolding(input: {
     await supabase.rpc('bump_account_balance', {
       p_uid: user.id,
       p_account: input.sourceAccount,
-      p_delta: -totalCost, // Mengurangi kas
+      p_delta: -totalCost, // Mengurangi kas inklusif acquisition cost
     })
-  }
-
-  let assetClass = input.asset_class
-  let name = input.name
-  if (['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'DOGE', 'USDT', 'SUI'].includes(symbol)) {
-    assetClass = 'crypto'
-    if (symbol === 'ETH') name = 'Ethereum'
-    if (symbol === 'BTC') name = 'Bitcoin'
-    if (symbol === 'SOL') name = 'Solana'
-    if (symbol === 'SUI') name = 'Sui'
   }
 
   // Merge into an existing position of the same symbol: weighted-average cost.
