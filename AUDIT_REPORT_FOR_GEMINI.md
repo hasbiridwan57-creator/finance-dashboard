@@ -35,18 +35,18 @@ Exit code: **0**
 
 ▲ Next.js 16.3.6 (Turbopack)
 - Environments: .env.local
-✓ Running next.config.ts took 62ms
+✓ Running next.config.ts took 72ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 621ms
+✓ Compiled successfully in 735ms
   Running TypeScript ...
-  Finished TypeScript in 857ms ...
+  Finished TypeScript in 831ms ...
   Collecting page data using 7 workers ...
   Generating static pages using 7 workers (0/7) ...
   Generating static pages using 7 workers (1/7) 
   Generating static pages using 7 workers (3/7) 
   Generating static pages using 7 workers (5/7) 
-✓ Generating static pages using 7 workers (7/7) in 109ms
+✓ Generating static pages using 7 workers (7/7) in 112ms
   Finalizing page optimization ...
 
 Route (app)
@@ -108,6 +108,9 @@ Exit code: **0**
 | 19 | Kolom `<td>` tabel akun tetap seimbang saat mode edit | ✅ PASS (FINAL FIX) | Kolom Aksi ke-4 selalu dirender ketika `isLoggedIn`; saat `isEditing` kolom Saldo hanya berisi `<input>`, dan tombol Simpan/Batal dirender di kolom Aksi. Sebelumnya sel ke-4 tidak dirender sama sekali sehingga tabel timpang 3 vs 4 kolom. |
 | 20 | Pesan error Server Actions tidak membocorkan pesan internal | ✅ PASS (FINAL FIX) | `updateAccountBalance` → `'Gagal memperbarui saldo akun.'`, `deleteAccount` → `'Gagal menghapus akun.'`; tidak ada `error.message` yang diteruskan ke UI. |
 | 21 | Exact assertion `topUpAllocation` | ✅ PASS (FINAL FIX) | `topUpStock.topUpBuy === 1_000_000` (100% fresh cash ke saham underweight) dan `topUpCrypto.topUpBuy === 0` (crypto overweight tidak menerima alokasi). Diverifikasi ulang independen: deficit saham 5.550.000 = 100% total deficit. |
+| 22 | Auto-Live Gold Pricing (`prices.ts`) | ✅ PASS (POLISH) | Mengambil harga live COMEX Gold Futures (`GC=F`) x USD/IDR, dikonversi ke rupiah per gram (1 oz = 31.1035 gram). Deteksi emas didukung via alias simbol (`EMAS`, `XAUUSD`, dll) serta heuristik nama/simbol. |
+| 23 | Perbaikan dobel tanda plus `++` (`charts.tsx`) | ✅ PASS (POLISH) | Menghapus hardcoded `{pl >= 0 ? '+' : ''}` karena helper `formatPct()` sudah otomatis menyertakan tanda plus. |
+| 24 | Edit manual `current_price` untuk unlisted/bonds (`actions.ts`, `holdings-table.tsx`) | ✅ PASS (POLISH) | Menambahkan opsi pengisian `current_price` pada fungsi `updateHolding` dan form Edit tabel kepemilikan. Mengatasi kendala obligasi & reksadana yang tidak memiliki feed publik live. |
 
 ### Catatan temuan (jujur)
 - **Instruksi menyebut tabel 8 kolom; riil 9 kolom.** Setelah kolom *Bobot* disisipkan, header menjadi 9 `<th>`. `colSpan` diset **9** — mengikuti struktur riil, bukan angka di instruksi. Kalau dipaksa 8, baris Edit/Sell akan menyisakan celah 1 kolom.
@@ -116,7 +119,7 @@ Exit code: **0**
 
 ---
 
-## BAGIAN C — Source Code Lengkap (9 file)
+## BAGIAN C — Source Code Lengkap (10 file)
 
 ### C.1 `src/lib/finance/aggregate.ts`
 
@@ -483,7 +486,7 @@ export function topUpAllocation(
 
 ### C.2 `src/app/actions.ts`
 
-_668 baris · 20,288 karakter_
+_675 baris · 20,540 karakter_
 
 ```typescript
 'use server'
@@ -680,6 +683,7 @@ export async function updateHolding(input: {
   asset_class: string
   quantity: number
   avg_buy_price: number
+  current_price?: number
 }) {
   const supabase = await createClient()
   const {
@@ -698,15 +702,21 @@ export async function updateHolding(input: {
     if (sym === 'SUI') name = 'Sui'
   }
 
+  const updatePayload: Record<string, unknown> = {
+    symbol: sym,
+    name,
+    asset_class: assetClass,
+    quantity: input.quantity,
+    avg_buy_price: input.avg_buy_price,
+  }
+
+  if (typeof input.current_price === 'number' && Number.isFinite(input.current_price) && input.current_price > 0) {
+    updatePayload.current_price = input.current_price
+  }
+
   const { error } = await supabase
     .from('holdings')
-    .update({
-      symbol: sym,
-      name,
-      asset_class: assetClass,
-      quantity: input.quantity,
-      avg_buy_price: input.avg_buy_price,
-    })
+    .update(updatePayload)
     .eq('id', input.id)
     .eq('user_id', user.id)
 
@@ -1156,9 +1166,280 @@ export async function transferBetweenAccounts(input: {
 }
 ```
 
-### C.3 `src/components/holdings-table.tsx`
+### C.3 `src/lib/finance/prices.ts`
 
-_459 baris · 17,881 karakter_
+_264 baris · 8,415 karakter_
+
+```typescript
+/**
+ * Live price fetcher, all denominated in IDR so PL is computed against avg_buy_price.
+ *   stock       -> Yahoo Finance (.JK / IDX)
+ *   crypto      -> Binance IDR pairs, CoinGecko fallback
+ *   gold        -> COMEX GC=F (USD/oz) x USD/IDR, converted to Rp per gram
+ *   bond        -> retail par value (Rp 1.000.000/unit); no public feed exists
+ *   mutual_fund -> no public NAV API exists in Indonesia; keeps stored NAV
+ */
+
+const UA = 'Mozilla/5.0 (finance-dashboard)'
+
+interface YahooMeta {
+  regularMarketPrice: number | null
+  currency: string | null
+}
+
+async function fetchYahoo(symbols: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (!symbols.length) return out
+  await Promise.all(
+    symbols.map(async (sym) => {
+      try {
+        const res = await fetch(
+          `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
+            sym,
+          )}?interval=1d&range=1d`,
+          { headers: { 'User-Agent': UA }, next: { revalidate: 60 } },
+        )
+        if (!res.ok) return
+        const json = await res.json()
+        const meta = json?.chart?.result?.[0]?.meta as YahooMeta | undefined
+        if (meta?.regularMarketPrice != null) out.set(sym, meta.regularMarketPrice)
+      } catch {
+        // Network/parse failure → keep the stored price.
+      }
+    }),
+  )
+  return out
+}
+
+const COINGECKO_ID: Record<string, string> = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  SOL: 'solana',
+  BNB: 'binancecoin',
+  ADA: 'cardano',
+  DOGE: 'dogecoin',
+  USDT: 'tether',
+  SUI: 'sui',
+}
+
+/** Crypto pairs Binance quotes directly against IDR. */
+const BINANCE_SUPPORTED = new Set([
+  'BTCIDR',
+  'ETHIDR',
+  'BNBIDR',
+  'SOLIDR',
+  'ADAIDR',
+  'DOGEIDR',
+  'AVAXIDR',
+  'LINKIDR',
+  'MATICIDR',
+  'DOTIDR',
+  'LTCIDR',
+  'TRXIDR',
+  'XRPIDR',
+  'SUIIDR',
+])
+
+/**
+ * Fetch crypto IDR prices. Tries CoinGecko first; falls back to Binance
+ * (IDR pairs) when CoinGecko is rate-limiting (403).
+ */
+async function fetchCrypto(symbols: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+
+  // --- Binance: bulk ticker, one request --------------------------------
+  const binSyms = symbols.filter((s) => !s.toUpperCase().endsWith('IDR'))
+  const pairs = binSyms
+    .map((s) => `${s.toUpperCase()}IDR`)
+    .filter((p) => BINANCE_SUPPORTED.has(p))
+  if (pairs.length) {
+    try {
+      const res = await fetch(
+        `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(
+          JSON.stringify(pairs),
+        )}`,
+        { headers: { Accept: 'application/json' }, next: { revalidate: 60 } },
+      )
+      if (res.ok) {
+        const json = (await res.json()) as { symbol: string; price: string }[]
+        for (const t of json) {
+          const sym = t.symbol.replace(/IDR$/, '')
+          const n = Number(t.price)
+          if (n > 0) out.set(sym, n)
+        }
+        if (out.size === binSyms.length) return out // all resolved
+      }
+    } catch {
+      // fall through to CoinGecko
+    }
+  }
+
+  // --- CoinGecko: ID map -----------------------------------------------
+  const ids = symbols.map((s) => COINGECKO_ID[s.toUpperCase()]).filter(Boolean)
+  if (ids.length) {
+    try {
+      const res = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(
+          ',',
+        )}&vs_currencies=idr`,
+        { headers: { Accept: 'application/json' }, next: { revalidate: 60 } },
+      )
+      if (res.ok) {
+        const json = (await res.json()) as Record<string, { idr?: number }>
+        for (const sym of symbols) {
+          const id = COINGECKO_ID[sym.toUpperCase()]
+          // Strict IDR check to avoid USD injection
+          if (id && typeof json[id]?.idr === 'number') out.set(sym, json[id].idr!)
+        }
+      }
+    } catch {
+      // Keep whatever Binance returned.
+    }
+  }
+
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Gold (physical / Antam / UBS / digital) — auto-derived IDR per gram.
+// Source: COMEX gold futures (GC=F, USD/troy-oz) x USD/IDR rate.
+// 1 troy ounce = 31.1034768 grams.
+// ---------------------------------------------------------------------------
+const GOLD_ALIASES = new Set([
+  'EMAS',
+  'GOLD',
+  'ANTAM',
+  'UBS',
+  'XAU',
+  'XAUUSD',
+  'XAUIDR',
+  'LOGAMMULIA',
+  'DIGITALGOLD',
+  'GALERI24',
+  'LOGAM24',
+  'PEGADAIAN',
+  'EMASDIGITAL',
+])
+
+/**
+ * Text heuristic for holdings imported without an explicit `gold` class: the
+ * symbol or name mentions gold. Kept deliberately narrow — "GOLD" alone is a
+ * real NYSE ticker (Barrick Gold), so the declared class always wins first.
+ */
+const GOLD_TEXT = /(^|[^A-Z])(emas|gold|antam|logam\s*mulia|logam24|galeri24|xau)([^A-Z]|$)/i
+const TROY_OUNCE_IN_GRAMS = 31.1034768
+
+/** Symbols starting with these prefixes are treated as Indonesian retail bonds. */
+const BOND_PREFIX = /^(ORI|SR|FR|PBS|SBSN|SUKUK|ST|SBR|OBL)\d*/i
+
+export async function fetchGoldPerGram(): Promise<number | null> {
+  try {
+    const [goldRes, fxRes] = await Promise.all([
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=1d', {
+        headers: { 'User-Agent': UA },
+        next: { revalidate: 300 },
+      }),
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/USDIDR=X?interval=1d&range=1d', {
+        headers: { 'User-Agent': UA },
+        next: { revalidate: 300 },
+      }),
+    ])
+    if (!goldRes.ok || !fxRes.ok) return null
+    const goldJson = await goldRes.json()
+    const fxJson = await fxRes.json()
+    const usdPerOz = goldJson?.chart?.result?.[0]?.meta?.regularMarketPrice
+    const usdIdr = fxJson?.chart?.result?.[0]?.meta?.regularMarketPrice
+    if (typeof usdPerOz !== 'number' || typeof usdIdr !== 'number') return null
+    return Math.round((usdPerOz * usdIdr) / TROY_OUNCE_IN_GRAMS)
+  } catch {
+    return null
+  }
+}
+
+export interface PricedHolding {
+  id?: string
+  symbol: string
+  name: string
+  asset_class: string
+  quantity: number
+  avg_buy_price: number
+  current_price: number
+  /** Fetched live this request; false = stale DB value. */
+  live: boolean
+}
+
+/**
+ * Attach live market prices to holdings. Symbols are mapped by asset class:
+ * stocks → Yahoo (`.JK` assumed listed on IDX), crypto → CoinGecko IDR pairs.
+ */
+export async function applyLivePrices(
+  holdings: {
+    symbol: string
+    name: string
+    asset_class: string
+    quantity: number
+    avg_buy_price: number
+    current_price: number
+  }[],
+): Promise<PricedHolding[]> {
+  const stocks = holdings.filter((h) => h.asset_class === 'stock').map((h) => h.symbol)
+  const crypto = holdings.filter((h) => h.asset_class === 'crypto').map((h) => h.symbol)
+
+  const [stockPx, cryptoPx] = await Promise.all([
+    fetchYahoo(stocks),
+    fetchCrypto(crypto),
+  ])
+
+  // Gold: one network call shared by every gold holding.
+  const needsGold = holdings.some(
+    (h) =>
+      h.asset_class === 'gold' ||
+      GOLD_ALIASES.has(h.symbol.trim().toUpperCase()) ||
+      GOLD_TEXT.test(h.symbol) ||
+      GOLD_TEXT.test(h.name ?? ''),
+  )
+  const goldPerGram = needsGold ? await fetchGoldPerGram() : null
+
+  return holdings.map((h) => {
+    const sym = h.symbol.toUpperCase()
+
+    // Primary source by declared asset class.
+    let livePx: number | undefined
+    if (h.asset_class === 'stock') {
+      livePx = stockPx.get(h.symbol)
+    } else if (h.asset_class === 'crypto') {
+      livePx = cryptoPx.get(sym)
+    } else if (h.asset_class === 'gold') {
+      livePx = goldPerGram ?? undefined
+    }
+
+    // Gold aliases act as a FALLBACK only: a symbol like "GOLD" is also a real
+    // Yahoo ticker (Barrick Gold Corp), so the declared class wins and the
+    // alias only applies when that lookup produced nothing.
+    const looksLikeGold =
+      GOLD_ALIASES.has(sym) || GOLD_TEXT.test(sym) || GOLD_TEXT.test(h.name ?? '')
+
+    if (livePx == null && (h.asset_class === 'gold' || looksLikeGold)) {
+      livePx = goldPerGram ?? undefined
+    }
+
+    // Retail bonds are quoted at par: Rp 1.000.000 per unit. No public feed
+    // exists for Indonesian retail bonds, so fall back to par only when the
+    // stored price is unusable.
+    if (livePx == null && (h.asset_class === 'bond' || BOND_PREFIX.test(sym))) {
+      livePx = h.current_price > 0 ? undefined : 1_000_000
+    }
+
+    return livePx != null
+      ? { ...h, current_price: livePx, live: true }
+      : { ...h, live: false }
+  })
+}
+```
+
+### C.4 `src/components/holdings-table.tsx`
+
+_469 baris · 18,433 karakter_
 
 ```tsx
 'use client'
@@ -1390,6 +1671,7 @@ function EditRow({
   const [assetClass, setAssetClass] = useState(holding.asset_class)
   const [quantity, setQuantity] = useState(String(holding.quantity))
   const [avgPrice, setAvgPrice] = useState(String(holding.avg_buy_price))
+  const [currentPrice, setCurrentPrice] = useState(String(holding.current_price))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -1404,6 +1686,7 @@ function EditRow({
       asset_class: assetClass,
       quantity: Number(quantity),
       avg_buy_price: Number(avgPrice),
+      current_price: Number(currentPrice) || undefined,
     })
     setLoading(false)
     if (res.error) { setError(res.error); return }
@@ -1449,6 +1732,14 @@ function EditRow({
             </label>
             <input type="number" required min="0" step="any" value={avgPrice}
               onChange={(e) => setAvgPrice(e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[#9aa0ac]">
+              Harga Kini (Rp)
+            </label>
+            <input type="number" min="0" step="any" value={currentPrice}
+              onChange={(e) => setCurrentPrice(e.target.value)} className={inputCls}
+              placeholder="Kosongkan utk harga pasar otomatis" />
           </div>
           <div className="col-span-2 flex items-end gap-2 sm:col-span-1">
             <button type="submit" disabled={loading} className={submitCls}>
@@ -1622,7 +1913,7 @@ function SellRow({
 }
 ```
 
-### C.4 `src/components/auth-actions.tsx`
+### C.5 `src/components/auth-actions.tsx`
 
 _987 baris · 39,283 karakter_
 
@@ -2616,7 +2907,7 @@ ANTM,Aneka Tambang,gold,100,15000`}
 }
 ```
 
-### C.5 `src/components/nav.tsx`
+### C.6 `src/components/nav.tsx`
 
 _138 baris · 4,453 karakter_
 
@@ -2761,7 +3052,7 @@ export function PeriodToggle() {
 }
 ```
 
-### C.6 `src/components/accounts-panel.tsx`
+### C.7 `src/components/accounts-panel.tsx`
 
 _248 baris · 9,688 karakter_
 
@@ -3016,7 +3307,7 @@ export function AccountsPanel({
 }
 ```
 
-### C.7 `src/components/rebalance-stress-panel.tsx`
+### C.8 `src/components/rebalance-stress-panel.tsx`
 
 _195 baris · 9,136 karakter_
 
@@ -3218,7 +3509,7 @@ export function RebalanceStressPanel({
 }
 ```
 
-### C.8 `src/app/page.tsx`
+### C.9 `src/app/page.tsx`
 
 _527 baris · 23,154 karakter_
 
@@ -3752,7 +4043,7 @@ function RecentActivity({ activity }: { activity: ActivityEvent[] }) {
 }
 ```
 
-### C.9 `scripts/checks/check-aggregate.ts`
+### C.10 `scripts/checks/check-aggregate.ts`
 
 _203 baris · 10,121 karakter_
 
@@ -3963,4 +4254,4 @@ console.log('scripts/checks/check-aggregate.ts: all quantitative checks passed!'
 
 ---
 
-**Total baris 9 file: 3,781.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
+**Total baris 10 file: 4,062.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.

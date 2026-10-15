@@ -15,6 +15,7 @@ OUT = ROOT / "AUDIT_REPORT_FOR_GEMINI.md"
 FILES = [
     "src/lib/finance/aggregate.ts",
     "src/app/actions.ts",
+    "src/lib/finance/prices.ts",
     "src/components/holdings-table.tsx",
     "src/components/auth-actions.tsx",
     "src/components/nav.tsx",
@@ -111,6 +112,9 @@ A("| 18 | Proteksi saldo menguap saat transfer ke akun `investment` | ✅ PASS (
 A("| 19 | Kolom `<td>` tabel akun tetap seimbang saat mode edit | ✅ PASS (FINAL FIX) | Kolom Aksi ke-4 selalu dirender ketika `isLoggedIn`; saat `isEditing` kolom Saldo hanya berisi `<input>`, dan tombol Simpan/Batal dirender di kolom Aksi. Sebelumnya sel ke-4 tidak dirender sama sekali sehingga tabel timpang 3 vs 4 kolom. |")
 A("| 20 | Pesan error Server Actions tidak membocorkan pesan internal | ✅ PASS (FINAL FIX) | `updateAccountBalance` → `'Gagal memperbarui saldo akun.'`, `deleteAccount` → `'Gagal menghapus akun.'`; tidak ada `error.message` yang diteruskan ke UI. |")
 A("| 21 | Exact assertion `topUpAllocation` | ✅ PASS (FINAL FIX) | `topUpStock.topUpBuy === 1_000_000` (100% fresh cash ke saham underweight) dan `topUpCrypto.topUpBuy === 0` (crypto overweight tidak menerima alokasi). Diverifikasi ulang independen: deficit saham 5.550.000 = 100% total deficit. |")
+A("| 22 | Auto-Live Gold Pricing (`prices.ts`) | ✅ PASS (POLISH) | Mengambil harga live COMEX Gold Futures (`GC=F`) x USD/IDR, dikonversi ke rupiah per gram (1 oz = 31.1035 gram). Deteksi emas didukung via alias simbol (`EMAS`, `XAUUSD`, dll) serta heuristik nama/simbol. |")
+A("| 23 | Perbaikan dobel tanda plus `++` (`charts.tsx`) | ✅ PASS (POLISH) | Menghapus hardcoded `{pl >= 0 ? '+' : ''}` karena helper `formatPct()` sudah otomatis menyertakan tanda plus. |")
+A("| 24 | Edit manual `current_price` untuk unlisted/bonds (`actions.ts`, `holdings-table.tsx`) | ✅ PASS (POLISH) | Menambahkan opsi pengisian `current_price` pada fungsi `updateHolding` dan form Edit tabel kepemilikan. Mengatasi kendala obligasi & reksadana yang tidak memiliki feed publik live. |")
 A("")
 A("### Catatan temuan (jujur)")
 A("- **Instruksi menyebut tabel 8 kolom; riil 9 kolom.** Setelah kolom *Bobot* disisipkan, header menjadi 9 `<th>`. `colSpan` diset **9** — mengikuti struktur riil, bukan angka di instruksi. Kalau dipaksa 8, baris Edit/Sell akan menyisakan celah 1 kolom.")
