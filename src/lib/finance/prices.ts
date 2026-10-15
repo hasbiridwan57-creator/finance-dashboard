@@ -132,7 +132,28 @@ async function fetchCrypto(symbols: string[]): Promise<Map<string, number>> {
 // Source: COMEX gold futures (GC=F, USD/troy-oz) x USD/IDR rate.
 // 1 troy ounce = 31.1034768 grams.
 // ---------------------------------------------------------------------------
-const GOLD_ALIASES = new Set(['EMAS', 'GOLD', 'ANTAM', 'UBS', 'XAU', 'LOGAMMULIA', 'DIGITALGOLD'])
+const GOLD_ALIASES = new Set([
+  'EMAS',
+  'GOLD',
+  'ANTAM',
+  'UBS',
+  'XAU',
+  'XAUUSD',
+  'XAUIDR',
+  'LOGAMMULIA',
+  'DIGITALGOLD',
+  'GALERI24',
+  'LOGAM24',
+  'PEGADAIAN',
+  'EMASDIGITAL',
+])
+
+/**
+ * Text heuristic for holdings imported without an explicit `gold` class: the
+ * symbol or name mentions gold. Kept deliberately narrow — "GOLD" alone is a
+ * real NYSE ticker (Barrick Gold), so the declared class always wins first.
+ */
+const GOLD_TEXT = /(^|[^A-Z])(emas|gold|antam|logam\s*mulia|logam24|galeri24|xau)([^A-Z]|$)/i
 const TROY_OUNCE_IN_GRAMS = 31.1034768
 
 /** Symbols starting with these prefixes are treated as Indonesian retail bonds. */
@@ -198,7 +219,11 @@ export async function applyLivePrices(
 
   // Gold: one network call shared by every gold holding.
   const needsGold = holdings.some(
-    (h) => h.asset_class === 'gold' || GOLD_ALIASES.has(h.symbol.toUpperCase()),
+    (h) =>
+      h.asset_class === 'gold' ||
+      GOLD_ALIASES.has(h.symbol.trim().toUpperCase()) ||
+      GOLD_TEXT.test(h.symbol) ||
+      GOLD_TEXT.test(h.name ?? ''),
   )
   const goldPerGram = needsGold ? await fetchGoldPerGram() : null
 
@@ -218,7 +243,10 @@ export async function applyLivePrices(
     // Gold aliases act as a FALLBACK only: a symbol like "GOLD" is also a real
     // Yahoo ticker (Barrick Gold Corp), so the declared class wins and the
     // alias only applies when that lookup produced nothing.
-    if (livePx == null && (h.asset_class === 'gold' || GOLD_ALIASES.has(sym))) {
+    const looksLikeGold =
+      GOLD_ALIASES.has(sym) || GOLD_TEXT.test(sym) || GOLD_TEXT.test(h.name ?? '')
+
+    if (livePx == null && (h.asset_class === 'gold' || looksLikeGold)) {
       livePx = goldPerGram ?? undefined
     }
 
