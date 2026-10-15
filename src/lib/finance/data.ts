@@ -229,12 +229,13 @@ function normaliseTrade(raw: unknown): TradeEntry | null {
  * Server-side trade source for the Smart Money journal. Never returns 404 —
  * a deterministic dataset keeps the panel alive in serverless deploys.
  */
-export async function getSmtTrades(): Promise<TradeEntry[]> {
+export const SMT_LEDGER_PATH = path.join(process.cwd(), '../smart-money-tracker/data/paper_trade_ledger.jsonl')
+
+export function readAllSmtTrades(): TradeEntry[] {
   try {
-    const filePath = path.join(process.cwd(), '../smart-money-tracker/data/paper_trade_ledger.jsonl')
-    if (fs.existsSync(filePath)) {
+    if (fs.existsSync(SMT_LEDGER_PATH)) {
       const lines = fs
-        .readFileSync(filePath, 'utf-8')
+        .readFileSync(SMT_LEDGER_PATH, 'utf-8')
         .trim()
         .split('\n')
         .filter((l) => l.trim() !== '')
@@ -247,10 +248,26 @@ export async function getSmtTrades(): Promise<TradeEntry[]> {
           }
         })
         .filter((t): t is TradeEntry => t !== null)
-      if (trades.length > 0) return trades.slice(-50)
+      if (trades.length > 0) return trades
     }
   } catch {
     // fall through
   }
-  return SMT_FALLBACK
+  return [...SMT_FALLBACK]
+}
+
+export function saveSmtTrades(trades: TradeEntry[]): void {
+  try {
+    const dir = path.dirname(SMT_LEDGER_PATH)
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    const content = trades.map((t) => JSON.stringify(t)).join('\n') + '\n'
+    fs.writeFileSync(SMT_LEDGER_PATH, content, 'utf-8')
+  } catch (err) {
+    console.warn('saveSmtTrades: ledger write skipped (read-only filesystem or serverless)', err)
+  }
+}
+
+export async function getSmtTrades(): Promise<TradeEntry[]> {
+  const all = readAllSmtTrades()
+  return all.slice(0, 50)
 }

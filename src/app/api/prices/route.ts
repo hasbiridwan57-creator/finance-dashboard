@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
 import { fetchGoldPerGram } from '@/lib/finance/prices'
 
-const GOLD_SYMBOLS = new Set(['EMAS', 'GOLD', 'ANTAM', 'UBS', 'XAU', 'XAUUSD', 'XAUIDR', 'LOGAMMULIA', 'DIGITALGOLD', 'GALERI24', 'LOGAM24', 'PEGADAIAN', 'EMASDIGITAL'])
+const GOLD_SYMBOLS = new Set([
+  'EMAS', 'GOLD', 'ANTAM', 'UBS', 'XAU', 'XAUUSD', 'XAUIDR',
+  'LOGAMMULIA', 'DIGITALGOLD', 'GALERI24', 'LOGAM24', 'PEGADAIAN', 'EMASDIGITAL'
+])
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
@@ -14,37 +17,12 @@ export async function GET(request: Request) {
       if (goldPx != null) return NextResponse.json({ price: goldPx })
     }
 
-    // 1. Automatic Gold Price (IDR per gram) from Yahoo Finance GC=F & USDIDR=X
-    if (['EMAS', 'GOLD', 'ANTAM', 'UBS', 'XAU'].includes(symbol)) {
-      const [goldRes, fxRes] = await Promise.all([
-        fetch('https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=1d', {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-        }),
-        fetch('https://query1.finance.yahoo.com/v8/finance/chart/USDIDR=X?interval=1d&range=1d', {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-        }),
-      ])
-
-      const goldJson = await goldRes.json()
-      const fxJson = await fxRes.json()
-
-      const goldUsd = goldJson?.chart?.result?.[0]?.meta?.regularMarketPrice
-      const usdIdr = fxJson?.chart?.result?.[0]?.meta?.regularMarketPrice
-
-      if (goldUsd && usdIdr) {
-        // 1 troy oz = 31.1034768 grams
-        const pricePerGramIdr = Math.round((goldUsd * usdIdr) / 31.1034768)
-        return NextResponse.json({ price: pricePerGramIdr })
-      }
-    }
-
-    // 2. Government Retail Bonds (ORI, SR, FR, PBS) -> Par value default Rp 1,000,000 or 100%
+    // Government Retail Bonds (ORI, SR, FR, PBS) -> Par value default Rp 1,000,000
     if (/^(ORI|SR|FR|PBS)\d+/i.test(symbol) || symbol.startsWith('OBL')) {
       return NextResponse.json({ price: 1000000 })
     }
 
     if (symbol.endsWith('.JK')) {
-      // Yahoo stock (IDX)
       const res = await fetch(
         `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`,
         { headers: { 'User-Agent': 'Mozilla/5.0' } },

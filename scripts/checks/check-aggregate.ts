@@ -15,6 +15,7 @@ import {
   calculateDivestmentNet,
   benchmarkAndAlphaMetrics,
   tradingJournalMetrics,
+  calculateAcquisitionCost,
   type TradeEntry,
   type Tx,
   type Holding,
@@ -288,6 +289,16 @@ assert.equal(emptyJournal.winRatePct, 0)
 assert.equal(emptyJournal.profitFactor, 0)
 assert.equal(emptyJournal.expectancy, 0)
 assert.equal(emptyJournal.maxDrawdown, 0)
+
+// 4. calculateAcquisitionCost (Symmetric Buy Fee)
+const buyStock = calculateAcquisitionCost('stock', 1_000, 10_000)
+assert.equal(buyStock.rawCost, 10_000_000)
+assert.equal(buyStock.buyFee, 15_000) // 0.15%
+assert.equal(buyStock.totalCashOutflow, 10_015_000)
+assert.equal(buyStock.effectiveAvgPrice, 10015)
+
+const buyCrypto = calculateAcquisitionCost('crypto', 1, 1_000_000_000)
+assert.equal(buyCrypto.buyFee, 1_100_000) // 0.11%
 
 console.log('scripts/checks/check-aggregate.ts: all quantitative checks passed!')
 

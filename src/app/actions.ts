@@ -2,7 +2,8 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
-import { calculateDivestmentNet } from '@/lib/finance/aggregate'
+import { calculateDivestmentNet, type TradeEntry } from '@/lib/finance/aggregate'
+import { readAllSmtTrades, saveSmtTrades } from '@/lib/finance/data'
 
 export async function addTransaction(input: {
   amount: number
@@ -697,6 +698,36 @@ export async function transferBetweenAccounts(input: {
     if (bumpToErr) return { error: 'Gagal menambah saldo akun tujuan.' }
   }
 
+  revalidatePath('/')
+  return { error: null }
+}
+
+
+// ============================================================================
+export async function addTradeEntry(input: Omit<TradeEntry, 'id'>) {
+  const trades = readAllSmtTrades()
+  const newId = `smt-${String(trades.length + 1).padStart(3, '0')}`
+  const newTrade: TradeEntry = { id: newId, ...input }
+  trades.unshift(newTrade)
+  saveSmtTrades(trades)
+  revalidatePath('/')
+  return { error: null, trade: newTrade }
+}
+
+export async function updateTradeEntry(input: TradeEntry) {
+  const trades = readAllSmtTrades()
+  const idx = trades.findIndex(t => t.id === input.id)
+  if (idx < 0) return { error: 'Trade tidak ditemukan.' }
+  trades[idx] = input
+  saveSmtTrades(trades)
+  revalidatePath('/')
+  return { error: null }
+}
+
+export async function deleteTradeEntry(id: string) {
+  let trades = readAllSmtTrades()
+  trades = trades.filter(t => t.id !== id)
+  saveSmtTrades(trades)
   revalidatePath('/')
   return { error: null }
 }

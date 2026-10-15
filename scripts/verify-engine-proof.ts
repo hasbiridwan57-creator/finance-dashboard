@@ -15,6 +15,7 @@ import {
   calculateDivestmentNet,
   benchmarkAndAlphaMetrics,
   tradingJournalMetrics,
+  calculateAcquisitionCost,
   type Holding,
   type TradeEntry,
   type Tx,
@@ -276,4 +277,20 @@ console.log('=== FORENSIC ENGINE PROOF & MATHEMATICAL TRACE ===\n')
   console.log(`  Output: ${JSON.stringify(output)}\n`)
 }
 
-console.log('=== ALL 15 ENGINE FUNCTIONS VERIFIED WITH MATHEMATICAL PROOF ===')
+// 16. calculateAcquisitionCost
+{
+  const name = 'calculateAcquisitionCost'
+  const input = { assetClass: 'stock', qty: 1000, buyPrice: 10_000 }
+  const formula = 'rawCost = qty * buyPrice; buyFee = rawCost * rate (0.15% stock / 0.11% crypto); totalCashOutflow = rawCost + buyFee; effectiveAvgPrice = totalCashOutflow / qty'
+  const output = calculateAcquisitionCost(input.assetClass, input.qty, input.buyPrice)
+  assert.equal(output.rawCost, 10_000_000)
+  assert.equal(output.buyFee, 15_000)
+  assert.equal(output.totalCashOutflow, 10_015_000)
+  assert.equal(output.effectiveAvgPrice, 10015)
+  console.log(`[PASS] 16. Function: ${name}`)
+  console.log(`  Input: ${JSON.stringify(input)}`)
+  console.log(`  Formula: ${formula}`)
+  console.log(`  Output: ${JSON.stringify(output)}\n`)
+}
+
+console.log('=== ALL 16 ENGINE FUNCTIONS VERIFIED WITH MATHEMATICAL PROOF ===')

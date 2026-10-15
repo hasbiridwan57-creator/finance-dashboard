@@ -547,3 +547,34 @@ export function tradingJournalMetrics(trades: TradeEntry[]) {
     maxDrawdown,
   }
 }
+
+
+/**
+ * 16. Calculate symmetric acquisition cost (buy price + brokerage fee & tax).
+ * Stock buy fee: 0.15% (PPh Final 0.1% only applies on sell).
+ * Crypto buy fee: 0.11% (PPN & Exchange fee).
+ */
+export function calculateAcquisitionCost(
+  assetClass: string,
+  quantity: number,
+  buyPrice: number
+) {
+  const rawCost = quantity * buyPrice
+  let buyFeeRate = 0
+  if (assetClass === 'stock') {
+    buyFeeRate = 0.0015 // 0.15% Broker Buy Fee
+  } else if (assetClass === 'crypto') {
+    buyFeeRate = 0.0011 // 0.11% PPN & Exchange Buy Fee
+  }
+  const buyFee = Math.round(rawCost * buyFeeRate)
+  const totalCashOutflow = Math.round(rawCost + buyFee)
+  const effectiveAvgPrice = quantity > 0 ? totalCashOutflow / quantity : buyPrice
+
+  return {
+    rawCost,
+    buyFee,
+    buyFeeRatePct: buyFeeRate * 100,
+    totalCashOutflow,
+    effectiveAvgPrice,
+  }
+}
