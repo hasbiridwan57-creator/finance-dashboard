@@ -19,9 +19,11 @@ FILES = [
     "src/components/holdings-table.tsx",
     "src/components/auth-actions.tsx",
     "src/components/nav.tsx",
+    "src/components/charts.tsx",
     "src/components/accounts-panel.tsx",
     "src/components/rebalance-stress-panel.tsx",
     "src/app/page.tsx",
+    "src/app/auth/page.tsx",
     "scripts/checks/check-aggregate.ts",
 ]
 
@@ -115,6 +117,10 @@ A("| 21 | Exact assertion `topUpAllocation` | ✅ PASS (FINAL FIX) | `topUpStock
 A("| 22 | Auto-Live Gold Pricing (`prices.ts`) | ✅ PASS (POLISH) | Mengambil harga live COMEX Gold Futures (`GC=F`) x USD/IDR, dikonversi ke rupiah per gram (1 oz = 31.1035 gram). Deteksi emas didukung via alias simbol (`EMAS`, `XAUUSD`, dll) serta heuristik nama/simbol. |")
 A("| 23 | Perbaikan dobel tanda plus `++` (`charts.tsx`) | ✅ PASS (POLISH) | Menghapus hardcoded `{pl >= 0 ? '+' : ''}` karena helper `formatPct()` sudah otomatis menyertakan tanda plus. |")
 A("| 24 | Edit manual `current_price` untuk unlisted/bonds (`actions.ts`, `holdings-table.tsx`) | ✅ PASS (POLISH) | Menambahkan opsi pengisian `current_price` pada fungsi `updateHolding` dan form Edit tabel kepemilikan. Mengatasi kendala obligasi & reksadana yang tidak memiliki feed publik live. |")
+A("| 25 | Optimistic UI & responsivitas pemilih periode (`nav.tsx`) | ✅ PASS (POLISH) | Menambahkan `useState` optimistik + `useTransition` + `{ scroll: false }` pada `PeriodToggle` (3, 6, 12 bulan). Menghilangkan kelambatan/macet saat klik dan memperluas area sentuh. |")
+A("| 26 | Auto-bootstrap akun default saat transaksi pertama (`actions.ts`, `auth-actions.tsx`) | ✅ PASS (POLISH) | Mencegah error 'Akun tidak ditemukan' pada user pendaftar baru yang tabel akunnya masih kosong di Supabase dengan auto-insert akun default ('BCA') saat simpan transaksi pertama. |")
+A("| 27 | Rebranding konsisten 'Wealth & Risk Terminal' (`auth/page.tsx`, `layout.tsx`) | ✅ PASS (POLISH) | Menyeragamkan judul dan identitas aplikasi di halaman login, metadata title, dan sidebar/header. |")
+A("| 28 | Penempatan prioritas portofolio nomor 1 & migrasi Vercel (`portfolio-site`) | ✅ PASS (POLISH) | Memindahkan project Wealth & Portfolio Risk Management Terminal ke index 0 (paling atas) di array portofolio dan men-deploy ke Vercel production (`portfolio-site-xi-swart-28.vercel.app`). |")
 A("")
 A("### Catatan temuan (jujur)")
 A("- **Instruksi menyebut tabel 8 kolom; riil 9 kolom.** Setelah kolom *Bobot* disisipkan, header menjadi 9 `<th>`. `colSpan` diset **9** — mengikuti struktur riil, bukan angka di instruksi. Kalau dipaksa 8, baris Edit/Sell akan menyisakan celah 1 kolom.")

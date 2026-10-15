@@ -35,18 +35,18 @@ Exit code: **0**
 
 ▲ Next.js 16.3.6 (Turbopack)
 - Environments: .env.local
-✓ Running next.config.ts took 72ms
+✓ Running next.config.ts took 101ms
 
   Creating an optimized production build ...
-✓ Compiled successfully in 735ms
+✓ Compiled successfully in 793ms
   Running TypeScript ...
-  Finished TypeScript in 831ms ...
+  Finished TypeScript in 1212ms ...
   Collecting page data using 7 workers ...
   Generating static pages using 7 workers (0/7) ...
   Generating static pages using 7 workers (1/7) 
   Generating static pages using 7 workers (3/7) 
   Generating static pages using 7 workers (5/7) 
-✓ Generating static pages using 7 workers (7/7) in 112ms
+✓ Generating static pages using 7 workers (7/7) in 128ms
   Finalizing page optimization ...
 
 Route (app)
@@ -111,6 +111,10 @@ Exit code: **0**
 | 22 | Auto-Live Gold Pricing (`prices.ts`) | ✅ PASS (POLISH) | Mengambil harga live COMEX Gold Futures (`GC=F`) x USD/IDR, dikonversi ke rupiah per gram (1 oz = 31.1035 gram). Deteksi emas didukung via alias simbol (`EMAS`, `XAUUSD`, dll) serta heuristik nama/simbol. |
 | 23 | Perbaikan dobel tanda plus `++` (`charts.tsx`) | ✅ PASS (POLISH) | Menghapus hardcoded `{pl >= 0 ? '+' : ''}` karena helper `formatPct()` sudah otomatis menyertakan tanda plus. |
 | 24 | Edit manual `current_price` untuk unlisted/bonds (`actions.ts`, `holdings-table.tsx`) | ✅ PASS (POLISH) | Menambahkan opsi pengisian `current_price` pada fungsi `updateHolding` dan form Edit tabel kepemilikan. Mengatasi kendala obligasi & reksadana yang tidak memiliki feed publik live. |
+| 25 | Optimistic UI & responsivitas pemilih periode (`nav.tsx`) | ✅ PASS (POLISH) | Menambahkan `useState` optimistik + `useTransition` + `{ scroll: false }` pada `PeriodToggle` (3, 6, 12 bulan). Menghilangkan kelambatan/macet saat klik dan memperluas area sentuh. |
+| 26 | Auto-bootstrap akun default saat transaksi pertama (`actions.ts`, `auth-actions.tsx`) | ✅ PASS (POLISH) | Mencegah error 'Akun tidak ditemukan' pada user pendaftar baru yang tabel akunnya masih kosong di Supabase dengan auto-insert akun default ('BCA') saat simpan transaksi pertama. |
+| 27 | Rebranding konsisten 'Wealth & Risk Terminal' (`auth/page.tsx`, `layout.tsx`) | ✅ PASS (POLISH) | Menyeragamkan judul dan identitas aplikasi di halaman login, metadata title, dan sidebar/header. |
+| 28 | Penempatan prioritas portofolio nomor 1 & migrasi Vercel (`portfolio-site`) | ✅ PASS (POLISH) | Memindahkan project Wealth & Portfolio Risk Management Terminal ke index 0 (paling atas) di array portofolio dan men-deploy ke Vercel production (`portfolio-site-xi-swart-28.vercel.app`). |
 
 ### Catatan temuan (jujur)
 - **Instruksi menyebut tabel 8 kolom; riil 9 kolom.** Setelah kolom *Bobot* disisipkan, header menjadi 9 `<th>`. `colSpan` diset **9** — mengikuti struktur riil, bukan angka di instruksi. Kalau dipaksa 8, baris Edit/Sell akan menyisakan celah 1 kolom.
@@ -119,7 +123,7 @@ Exit code: **0**
 
 ---
 
-## BAGIAN C — Source Code Lengkap (10 file)
+## BAGIAN C — Source Code Lengkap (12 file)
 
 ### C.1 `src/lib/finance/aggregate.ts`
 
@@ -486,7 +490,7 @@ export function topUpAllocation(
 
 ### C.2 `src/app/actions.ts`
 
-_675 baris · 20,540 karakter_
+_699 baris · 21,166 karakter_
 
 ```typescript
 'use server'
@@ -512,12 +516,36 @@ export async function addTransaction(input: {
   if (!(input.amount > 0)) return { error: 'Nominal harus lebih dari 0.' }
 
   // Validasi: akun harus ada & milik user
-  const { data: acc } = await supabase
+  let { data: acc } = await supabase
     .from('accounts')
     .select('id')
     .eq('user_id', user.id)
     .eq('name', input.account)
     .maybeSingle()
+
+  // Bootstrap: user yang benar-benar belum punya akun (pendaftar baru) tidak
+  // boleh buntu di transaksi pertama. Buat akun default pada nama yang dipilih.
+  if (!acc) {
+    const { count } = await supabase
+      .from('accounts')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+
+    if (!count) {
+      const { data: created } = await supabase
+        .from('accounts')
+        .insert({
+          user_id: user.id,
+          name: input.account || 'BCA',
+          kind: 'bank',
+          balance: 0,
+        })
+        .select('id')
+        .maybeSingle()
+      acc = created
+    }
+  }
+
   if (!acc) return { error: 'Akun tidak ditemukan. Pilih akun yang tersedia.' }
 
   // Resolve category name → id (categories are a shared lookup table).
@@ -1915,7 +1943,7 @@ function SellRow({
 
 ### C.5 `src/components/auth-actions.tsx`
 
-_987 baris · 39,283 karakter_
+_990 baris · 39,340 karakter_
 
 ```tsx
 'use client'
@@ -1940,8 +1968,6 @@ const CATEGORIES = [
   { name: 'Lainnya', type: 'expense' },
 ] as const
 
-const ACCOUNTS = ['BCA Utama', 'GoPay', 'OVO', 'Tunai Dompet']
-
 export function AddTransactionButton({
   accounts = [],
 }: {
@@ -1953,14 +1979,19 @@ export function AddTransactionButton({
   const [error, setError] = useState<string | null>(null)
 
   const operationalAccounts = accounts.filter((a) => a.kind !== 'investment')
-  const accountNames = operationalAccounts.length > 0 ? operationalAccounts.map((a) => a.name) : ACCOUNTS
+  const accountNames =
+    operationalAccounts.length > 0
+      ? operationalAccounts.map((a) => a.name)
+      : accounts.length === 0
+        ? ['BCA'] // akun default yang otomatis dibuat server saat transaksi pertama
+        : []
 
   const [type, setType] = useState<'income' | 'expense'>('expense')
   const [amount, setAmount] = useState('')
   const [category, setCategory] = useState('Makan & Minum')
   const [description, setDescription] = useState('')
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [account, setAccount] = useState(() => accountNames[0] || 'BCA Utama')
+  const [account, setAccount] = useState(() => accountNames[0] || 'BCA')
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -2909,13 +2940,13 @@ ANTM,Aneka Tambang,gold,100,15000`}
 
 ### C.6 `src/components/nav.tsx`
 
-_138 baris · 4,453 karakter_
+_147 baris · 4,906 karakter_
 
 ```tsx
 'use client'
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useTransition } from 'react'
 
 const NAV = [
   { label: 'Ringkasan', id: 'top' },
@@ -3024,35 +3055,424 @@ export function PeriodToggle() {
   const router = useRouter()
   const pathname = usePathname()
   const sp = useSearchParams()
+  const [isPending, startTransition] = useTransition()
   const current = Number(sp.get('months')) || 6
+  const [optimisticMonths, setOptimisticMonths] = useState<number>(current)
 
   const setMonths = (m: number) => {
+    setOptimisticMonths(m)
     const q = new URLSearchParams(sp.toString())
     q.set('months', String(m))
-    router.push(`${pathname}?${q.toString()}`)
+    startTransition(() => {
+      router.push(`${pathname}?${q.toString()}`, { scroll: false })
+    })
   }
 
   return (
-    <div className="flex items-center gap-1 rounded-full border border-white/[.08] bg-white/[.03] p-1">
-      {[3, 6, 12].map((m) => (
-        <button
-          key={m}
-          onClick={() => setMonths(m)}
-          className={`cursor-pointer rounded-full px-3 py-1 text-[11px] font-medium transition-all duration-200 ${
-            current === m
-              ? 'bg-white/[.10] text-white'
-              : 'text-[#9aa0ac] hover:text-white'
-          }`}
-        >
-          {m} bln
-        </button>
-      ))}
+    <div className="flex items-center gap-1.5 rounded-full border border-white/[.10] bg-white/[.04] p-1 shadow-inner">
+      {[3, 6, 12].map((m) => {
+        const active = (isPending ? optimisticMonths : current) === m
+        return (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMonths(m)}
+            className={`cursor-pointer rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none ${
+              active
+                ? 'bg-emerald-500 text-[#052e1c] shadow-sm shadow-emerald-500/20'
+                : 'text-[#9aa0ac] hover:bg-white/[.06] hover:text-white'
+            }`}
+          >
+            {m} bln
+          </button>
+        )
+      })}
     </div>
   )
 }
 ```
 
-### C.7 `src/components/accounts-panel.tsx`
+### C.7 `src/components/charts.tsx`
+
+_373 baris · 10,533 karakter_
+
+```tsx
+'use client'
+
+import { Line, Doughnut, Bar } from 'react-chartjs-2'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  ArcElement,
+  BarElement,
+  Tooltip,
+  Legend,
+  Filler,
+  type ChartData,
+  type ChartOptions,
+} from 'chart.js'
+import type { MonthBucket } from '@/lib/finance/aggregate'
+import { formatIDR, formatMonth, formatPct } from '@/lib/format'
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  ArcElement,
+  BarElement,
+  Tooltip,
+  Legend,
+  Filler,
+)
+
+const GRID = 'rgba(255,255,255,.055)' as const
+const TICK = '#646b78' as const
+const TOOLTIP_BG = '#11151c' as const
+
+const baseTooltip = {
+  backgroundColor: TOOLTIP_BG,
+  borderColor: 'rgba(255,255,255,.10)',
+  borderWidth: 1,
+  titleColor: '#f4f5f7',
+  bodyColor: '#9aa0ac',
+  padding: 10,
+  cornerRadius: 10,
+  displayColors: true,
+  boxPadding: 4,
+} as const
+
+// --- Cash flow: layered area chart ---------------------------------------
+
+const EASE = 'easeOutQuart' as const
+
+export function CashflowChart({ buckets }: { buckets: MonthBucket[] }) {
+  const labels = buckets.map((b) => formatMonth(b.month))
+  const mk = (
+    label: string,
+    data: number[],
+    color: string,
+  ): ChartData<'line'>['datasets'][number] => ({
+    label,
+    data,
+    borderColor: color,
+    backgroundColor: (ctx) => {
+      const { chart } = ctx
+      const { ctx: c, chartArea } = chart
+      if (!chartArea) return 'transparent'
+      const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom)
+      g.addColorStop(0, color + '2e')
+      g.addColorStop(1, color + '00')
+      return g
+    },
+    fill: true,
+    tension: 0.4,
+    borderWidth: 2,
+    pointRadius: 0,
+    pointHoverRadius: 5,
+    pointHoverBackgroundColor: color,
+    pointHoverBorderColor: '#0a0a0a',
+    pointHoverBorderWidth: 2,
+  })
+
+  const data: ChartData<'line'> = {
+    labels,
+    datasets: [
+      mk('Pemasukan', buckets.map((b) => b.income), '#34d399'),
+      mk('Pengeluaran', buckets.map((b) => b.expense), '#fb923c'),
+      // Net worth line: thin, dashed, emerald-white
+      {
+        label: 'Selisih',
+        data: buckets.map((b) => b.net),
+        borderColor: 'rgba(244,245,247,.45)',
+        borderWidth: 1.5,
+        borderDash: [4, 4],
+        tension: 0.4,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+      },
+    ],
+  }
+
+  const options: ChartOptions<'line'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 900, easing: EASE },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: {
+        display: true,
+        position: 'top',
+        align: 'end',
+        labels: {
+          color: TICK,
+          usePointStyle: true,
+          pointStyle: 'circle',
+          boxWidth: 7,
+          boxHeight: 7,
+          padding: 14,
+          font: { size: 11 },
+        },
+      },
+      tooltip: {
+        ...baseTooltip,
+        callbacks: { label: (c) => ` ${c.dataset.label}: ${formatIDR(Number(c.raw))}` },
+      },
+    },
+    scales: {
+      y: {
+        ticks: { color: TICK, font: { size: 10 }, callback: (v) => formatCompactT(Number(v)) },
+        grid: { color: GRID },
+        border: { display: false },
+      },
+      x: {
+        ticks: { color: TICK, font: { size: 10 } },
+        grid: { display: false },
+        border: { display: false },
+      },
+    },
+  }
+
+  return (
+    <div className="h-72">
+      <Line data={data} options={options} />
+    </div>
+  )
+}
+
+function formatCompactT(v: number): string {
+  const abs = Math.abs(v)
+  const s = v < 0 ? '-' : ''
+  if (abs >= 1e9) return `${s}${(abs / 1e9).toFixed(1).replace('.', ',')} M`
+  if (abs >= 1e6) return `${s}${(abs / 1e6).toFixed(1).replace('.', ',')} jt`
+  if (abs >= 1e3) return `${s}${(abs / 1e3).toFixed(0)} rb`
+  return `${s}${abs}`
+}
+
+// --- Expense breakdown doughnut ------------------------------------------
+
+export function CategoryChart({
+  data,
+}: {
+  data: { category: string; total: number }[]
+}) {
+  const palette = [
+    '#34d399', '#60a5fa', '#a78bfa', '#f472b6', '#facc15',
+    '#2dd4bf', '#fb7185', '#94a3b8', '#a3e635', '#38bdf8',
+  ]
+
+  const chartData: ChartData<'doughnut'> = {
+    labels: data.map((d) => d.category),
+    datasets: [
+      {
+        data: data.map((d) => d.total),
+        backgroundColor: palette,
+        borderColor: 'transparent',
+        borderWidth: 0,
+        hoverOffset: 8,
+        spacing: 2,
+      },
+    ],
+  }
+
+  const options: ChartOptions<'doughnut'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 800, easing: EASE, animateRotate: true, animateScale: true },
+    cutout: '68%',
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        ...baseTooltip,
+        callbacks: { label: (c) => ` ${c.label}: ${formatIDR(Number(c.raw))}` },
+      },
+    },
+  }
+
+  const total = data.reduce((s, d) => s + d.total, 0)
+
+  return (
+    <div className="flex flex-col items-center gap-5">
+      <div className="relative h-52 w-52">
+        <Doughnut data={chartData} options={options} />
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-[10px] uppercase tracking-widest text-[#646b78]">
+            Total
+          </span>
+          <span className="mt-0.5 text-xl font-semibold tabular-nums text-white">
+            {formatIDR(total, { compact: true })}
+          </span>
+        </div>
+      </div>
+      {/* Legend as list with bar + amount */}
+      <ul className="w-full space-y-1.5">
+        {data.map((d, i) => (
+          <li key={d.category} className="flex items-center gap-2.5 text-xs">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: palette[i % palette.length] }}
+            />
+            <span className="w-24 truncate text-[#9aa0ac]">{d.category}</span>
+            <span className="flex-1" />
+            <span className="tabular-nums font-medium text-[#f4f5f7]">
+              {formatIDR(d.total, { compact: true })}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+// --- Portfolio by asset class (horizontal bar) ---------------------------
+
+export function PortfolioChart({
+  data,
+  costByClass,
+}: {
+  data: { assetClass: string; total: number }[]
+  costByClass?: { assetClass: string; total: number }[]
+}) {
+  const labels: Record<string, string> = {
+    stock: 'Saham',
+    crypto: 'Crypto',
+    mutual_fund: 'Reksa Dana',
+    bond: 'Obligasi',
+    gold: 'Emas',
+  }
+  const colors: Record<string, string> = {
+    stock: '#34d399',
+    crypto: '#a78bfa',
+    mutual_fund: '#60a5fa',
+    bond: '#facc15',
+    gold: '#fb923c',
+  }
+
+  const costMap = new Map(
+    (costByClass ?? []).map((c) => [c.assetClass, c.total]),
+  )
+
+  const chartData: ChartData<'bar'> = {
+    labels: data.map((d) => labels[d.assetClass] ?? d.assetClass),
+    datasets: [
+      {
+        label: 'Nilai Pasar',
+        data: data.map((d) => d.total),
+        backgroundColor: data.map((d) => (colors[d.assetClass] ?? '#34d399') + 'cc'),
+        hoverBackgroundColor: data.map((d) => colors[d.assetClass] ?? '#34d399'),
+        borderRadius: 6,
+        barThickness: 22,
+      },
+    ],
+  }
+
+  const options: ChartOptions<'bar'> = {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 900, easing: EASE, delay: (ctx) => ctx.dataIndex * 60 },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        ...baseTooltip,
+        callbacks: { label: (c) => ` ${formatIDR(Number(c.raw))}` },
+      },
+    },
+    scales: {
+      x: {
+        ticks: { color: TICK, font: { size: 10 }, callback: (v) => formatCompactT(Number(v)) },
+        grid: { color: GRID },
+        border: { display: false },
+      },
+      y: {
+        ticks: { color: '#9aa0ac', font: { size: 11 } },
+        grid: { display: false },
+        border: { display: false },
+      },
+    },
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="h-56">
+        <Bar data={chartData} options={options} />
+      </div>
+      <ul className="space-y-1.5">
+        {data.map((d) => {
+          const cost = costMap.get(d.assetClass) ?? 0
+          const pl = d.total - cost
+          const plPct = cost > 0 ? (pl / cost) * 100 : 0
+          return (
+            <li key={d.assetClass} className="flex items-center gap-2 text-[11px]">
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: colors[d.assetClass] ?? '#34d399' }}
+              />
+              <span className="text-[#9aa0ac]">{labels[d.assetClass] ?? d.assetClass}</span>
+              <span className="ml-auto font-medium tabular-nums text-white">
+                {formatIDR(d.total, { compact: true })}
+              </span>
+              {cost > 0 && (
+                <span
+                  className={`w-16 text-right tabular-nums ${
+                    pl >= 0 ? 'text-emerald-400' : 'text-orange-400'
+                  }`}
+                >
+                  {formatPct(plPct)}
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+// --- Small sparkline for the stat cards ----------------------------------
+
+export function Sparkline({ values }: { values: number[] }) {
+  const data: ChartData<'line'> = {
+    labels: values.map((_, i) => i),
+    datasets: [
+      {
+        data: values,
+        borderColor: (values.at(-1) ?? 0) >= (values[0] ?? 0) ? '#34d399' : '#fb923c',
+        backgroundColor: (ctx) => {
+          const { chart } = ctx
+          const { ctx: c, chartArea } = chart
+          if (!chartArea) return 'transparent'
+          const up = (values.at(-1) ?? 0) >= (values[0] ?? 0)
+          const color = up ? '#34d399' : '#fb923c'
+          const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom)
+          g.addColorStop(0, color + '30')
+          g.addColorStop(1, color + '00')
+          return g
+        },
+        borderWidth: 1.75,
+        pointRadius: 0,
+        tension: 0.4,
+        fill: true,
+      },
+    ],
+  }
+
+  const options: ChartOptions<'line'> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 1000, easing: EASE },
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: { x: { display: false }, y: { display: false } },
+  }
+
+  return <div className="h-9">{<Line data={data} options={options} />}</div>
+}
+```
+
+### C.8 `src/components/accounts-panel.tsx`
 
 _248 baris · 9,688 karakter_
 
@@ -3307,7 +3727,7 @@ export function AccountsPanel({
 }
 ```
 
-### C.8 `src/components/rebalance-stress-panel.tsx`
+### C.9 `src/components/rebalance-stress-panel.tsx`
 
 _195 baris · 9,136 karakter_
 
@@ -3509,7 +3929,7 @@ export function RebalanceStressPanel({
 }
 ```
 
-### C.9 `src/app/page.tsx`
+### C.10 `src/app/page.tsx`
 
 _527 baris · 23,154 karakter_
 
@@ -4043,7 +4463,112 @@ function RecentActivity({ activity }: { activity: ActivityEvent[] }) {
 }
 ```
 
-### C.10 `scripts/checks/check-aggregate.ts`
+### C.11 `src/app/auth/page.tsx`
+
+_98 baris · 3,531 karakter_
+
+```tsx
+import { redirect } from 'next/navigation'
+import Link from 'next/link'
+import { createClient } from '@/lib/supabase/server'
+import { AuthForm } from './auth-form'
+
+export const metadata = { title: 'Masuk — Wealth & Risk Terminal' }
+
+export default async function AuthPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ mode?: string; redirect_to?: string }>
+}) {
+  const sp = await searchParams
+  const mode = sp.mode === 'signup' ? 'signup' : 'login'
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  // Already signed in? Go straight to the dashboard.
+  if (user) redirect(sp.redirect_to || '/')
+
+  return (
+    <div className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-[#07080a] px-5">
+      {/* Ambient glow — same family as the dashboard */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-1/3 left-1/2 h-[600px] w-[600px] -translate-x-1/2 rounded-full opacity-40 blur-[120px]"
+        style={{ background: 'radial-gradient(circle, rgba(16,185,129,.18), transparent 70%)' }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute bottom-0 right-0 h-[400px] w-[400px] rounded-full opacity-30 blur-[120px]"
+        style={{ background: 'radial-gradient(circle, rgba(59,130,246,.14), transparent 70%)' }}
+      />
+
+      <div className="relative w-full max-w-sm">
+        <Link
+          href="/"
+          className="mb-8 flex items-center justify-center gap-2.5 text-sm font-semibold tracking-tight text-white"
+        >
+          <span className="grid h-8 w-8 place-items-center rounded-lg border border-white/[.08] bg-white/[.03] text-emerald-400">
+            H
+          </span>
+          Wealth & Risk Terminal
+        </Link>
+
+        <div className="rounded-2xl border border-white/[.07] bg-[#0e1015]/80 p-6 shadow-2xl shadow-black/40 backdrop-blur-xl">
+          <h1 className="text-lg font-semibold text-white">
+            {mode === 'signup' ? 'Buat akun baru' : 'Masuk ke akunmu'}
+          </h1>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-[#9aa0ac]">
+            {mode === 'signup'
+              ? 'Data keuanganmu akan terisi otomatis dengan contoh realistis.'
+              : 'Lanjut melacak keuanganmu.'}
+          </p>
+
+          <div className="mt-6">
+            <AuthForm mode={mode} />
+          </div>
+
+          <div className="mt-5 border-t border-white/[.06] pt-5">
+            <p className="text-center text-[12px] text-[#646b78]">
+              {mode === 'signup' ? (
+                <>
+                  Sudah punya akun?{' '}
+                  <a
+                    href="/auth?mode=login"
+                    className="font-medium text-emerald-400 hover:text-emerald-300"
+                  >
+                    Masuk
+                  </a>
+                </>
+              ) : (
+                <>
+                  Belum punya akun?{' '}
+                  <a
+                    href="/auth?mode=signup"
+                    className="font-medium text-emerald-400 hover:text-emerald-300"
+                  >
+                    Daftar
+                  </a>
+                </>
+              )}
+            </p>
+          </div>
+        </div>
+
+        <p className="mt-5 text-center text-[11px] leading-relaxed text-[#4a515e]">
+          Tanpa login, kamu melihat dataset contoh yang sama.
+          <br />
+          Data kamu hanya bisa dilihat oleh akunmu sendiri.
+        </p>
+      </div>
+    </div>
+  )
+}
+```
+
+### C.12 `scripts/checks/check-aggregate.ts`
 
 _203 baris · 10,121 karakter_
 
@@ -4254,4 +4779,4 @@ console.log('scripts/checks/check-aggregate.ts: all quantitative checks passed!'
 
 ---
 
-**Total baris 10 file: 4,062.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
+**Total baris 12 file: 4,569.** Seluruh source ditulis utuh dari baris pertama sampai terakhir — tidak ada bagian yang disingkat.
