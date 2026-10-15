@@ -227,6 +227,7 @@ function EditRow({
   const [assetClass, setAssetClass] = useState(holding.asset_class)
   const [quantity, setQuantity] = useState(String(holding.quantity))
   const [avgPrice, setAvgPrice] = useState(String(holding.avg_buy_price))
+  const [currentPrice, setCurrentPrice] = useState(String(holding.current_price))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -241,6 +242,7 @@ function EditRow({
       asset_class: assetClass,
       quantity: Number(quantity),
       avg_buy_price: Number(avgPrice),
+      current_price: Number(currentPrice) || undefined,
     })
     setLoading(false)
     if (res.error) { setError(res.error); return }
@@ -286,6 +288,14 @@ function EditRow({
             </label>
             <input type="number" required min="0" step="any" value={avgPrice}
               onChange={(e) => setAvgPrice(e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[#9aa0ac]">
+              Harga Kini (Rp)
+            </label>
+            <input type="number" min="0" step="any" value={currentPrice}
+              onChange={(e) => setCurrentPrice(e.target.value)} className={inputCls}
+              placeholder="Kosongkan utk harga pasar otomatis" />
           </div>
           <div className="col-span-2 flex items-end gap-2 sm:col-span-1">
             <button type="submit" disabled={loading} className={submitCls}>

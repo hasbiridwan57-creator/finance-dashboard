@@ -192,6 +192,7 @@ export async function updateHolding(input: {
   asset_class: string
   quantity: number
   avg_buy_price: number
+  current_price?: number
 }) {
   const supabase = await createClient()
   const {
@@ -210,15 +211,21 @@ export async function updateHolding(input: {
     if (sym === 'SUI') name = 'Sui'
   }
 
+  const updatePayload: Record<string, unknown> = {
+    symbol: sym,
+    name,
+    asset_class: assetClass,
+    quantity: input.quantity,
+    avg_buy_price: input.avg_buy_price,
+  }
+
+  if (typeof input.current_price === 'number' && Number.isFinite(input.current_price) && input.current_price > 0) {
+    updatePayload.current_price = input.current_price
+  }
+
   const { error } = await supabase
     .from('holdings')
-    .update({
-      symbol: sym,
-      name,
-      asset_class: assetClass,
-      quantity: input.quantity,
-      avg_buy_price: input.avg_buy_price,
-    })
+    .update(updatePayload)
     .eq('id', input.id)
     .eq('user_id', user.id)
 
