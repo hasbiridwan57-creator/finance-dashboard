@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { AuthForm } from './auth-form'
 
-export const metadata = { title: 'Masuk — Finance Dashboard' }
+export const metadata = { title: 'Masuk — Wealth & Risk Terminal' }
 
 export default async function AuthPage({
   searchParams,
@@ -43,7 +43,7 @@ export default async function AuthPage({
           <span className="grid h-8 w-8 place-items-center rounded-lg border border-white/[.08] bg-white/[.03] text-emerald-400">
             H
           </span>
-          Finance Dashboard
+          Wealth & Risk Terminal
         </Link>
 
         <div className="rounded-2xl border border-white/[.07] bg-[#0e1015]/80 p-6 shadow-2xl shadow-black/40 backdrop-blur-xl">

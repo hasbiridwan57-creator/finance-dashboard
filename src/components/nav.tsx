@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useTransition } from 'react'
 
 const NAV = [
   { label: 'Ringkasan', id: 'top' },
@@ -110,29 +110,38 @@ export function PeriodToggle() {
   const router = useRouter()
   const pathname = usePathname()
   const sp = useSearchParams()
+  const [isPending, startTransition] = useTransition()
   const current = Number(sp.get('months')) || 6
+  const [optimisticMonths, setOptimisticMonths] = useState<number>(current)
 
   const setMonths = (m: number) => {
+    setOptimisticMonths(m)
     const q = new URLSearchParams(sp.toString())
     q.set('months', String(m))
-    router.push(`${pathname}?${q.toString()}`)
+    startTransition(() => {
+      router.push(`${pathname}?${q.toString()}`, { scroll: false })
+    })
   }
 
   return (
-    <div className="flex items-center gap-1 rounded-full border border-white/[.08] bg-white/[.03] p-1">
-      {[3, 6, 12].map((m) => (
-        <button
-          key={m}
-          onClick={() => setMonths(m)}
-          className={`cursor-pointer rounded-full px-3 py-1 text-[11px] font-medium transition-all duration-200 ${
-            current === m
-              ? 'bg-white/[.10] text-white'
-              : 'text-[#9aa0ac] hover:text-white'
-          }`}
-        >
-          {m} bln
-        </button>
-      ))}
+    <div className="flex items-center gap-1.5 rounded-full border border-white/[.10] bg-white/[.04] p-1 shadow-inner">
+      {[3, 6, 12].map((m) => {
+        const active = (isPending ? optimisticMonths : current) === m
+        return (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMonths(m)}
+            className={`cursor-pointer rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all duration-150 select-none ${
+              active
+                ? 'bg-emerald-500 text-[#052e1c] shadow-sm shadow-emerald-500/20'
+                : 'text-[#9aa0ac] hover:bg-white/[.06] hover:text-white'
+            }`}
+          >
+            {m} bln
+          </button>
+        )
+      })}
     </div>
   )
 }

@@ -20,8 +20,6 @@ const CATEGORIES = [
   { name: 'Lainnya', type: 'expense' },
 ] as const
 
-const ACCOUNTS = ['BCA Utama', 'GoPay', 'OVO', 'Tunai Dompet']
-
 export function AddTransactionButton({
   accounts = [],
 }: {
@@ -33,14 +31,19 @@ export function AddTransactionButton({
   const [error, setError] = useState<string | null>(null)
 
   const operationalAccounts = accounts.filter((a) => a.kind !== 'investment')
-  const accountNames = operationalAccounts.length > 0 ? operationalAccounts.map((a) => a.name) : ACCOUNTS
+  const accountNames =
+    operationalAccounts.length > 0
+      ? operationalAccounts.map((a) => a.name)
+      : accounts.length === 0
+        ? ['BCA'] // akun default yang otomatis dibuat server saat transaksi pertama
+        : []
 
   const [type, setType] = useState<'income' | 'expense'>('expense')
   const [amount, setAmount] = useState('')
   const [category, setCategory] = useState('Makan & Minum')
   const [description, setDescription] = useState('')
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [account, setAccount] = useState(() => accountNames[0] || 'BCA Utama')
+  const [account, setAccount] = useState(() => accountNames[0] || 'BCA')
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
